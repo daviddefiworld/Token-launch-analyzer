@@ -27,6 +27,7 @@ const SWAP_ABI = [
 const SWAP_INTERFACE = new Interface(SWAP_ABI);
 const SWAP_TOPIC = SWAP_INTERFACE.getEvent("Swap")!.topicHash;
 const RESERVES_ABI = ["function getReserves() view returns (uint256,uint256,uint256)"];
+const DECIMALS_ABI = ["function decimals() view returns (uint8)"];
 const BLOCKS_PER_DAY = 43_200;
 
 // Computes liquidity and 24h volume in USD. Known quote tokens (WETH/USDC/USDT/AERO)
@@ -35,6 +36,7 @@ const BLOCKS_PER_DAY = 43_200;
 export class MarketDataService {
   private static readonly DEX_BATCH_SIZE = 30;
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
+  private readonly decimalsCache = new Map<string, number>();
 
   constructor(
     private readonly etherscan: EtherscanService | null = null,
@@ -61,13 +63,17 @@ export class MarketDataService {
     // Run launches concurrently: RPC reserve reads overlap while the Etherscan
     // volume calls queue on the shared rate limiter, so wall time ≈ the rate-limit floor.
     const settled = await Promise.all(launches.map(async (launch) => {
-      const quote = launch.quoteAddress ? getQuoteToken(launch.quoteAddress) : undefined;
-      if (!quote) {
+      // Resolve the quote's decimals: known tokens from the static map, anything else
+      // straight from the chain. This lets us value real on-chain swap volume for any
+      // quote PriceService can price, instead of bailing to DexScreener's h24 (which
+      // reads 0 for freshly launched pairs it hasn't indexed yet).
+      const decimals = launch.quoteAddress ? await this.resolveQuoteDecimals(launch.quoteAddress) : null;
+      if (decimals == null) {
         dexFallback.push(launch);
         return null;
       }
       try {
-        return await this.computeMarketData(launch, quote.decimals, latestBlock, updatedAt);
+        return await this.computeMarketData(launch, decimals, latestBlock, updatedAt);
       } catch (error) {
         console.warn(`Market data failed for ${launch.poolAddress}: ${error instanceof Error ? error.message : error}`);
         dexFallback.push(launch);
@@ -93,6 +99,26 @@ export class MarketDataService {
     ]);
 
     return { poolAddress: launch.poolAddress, liquidityUsd, volumeUsd, marketDataUpdatedAt: updatedAt };
+  }
+
+  // Known quote tokens carry their decimals statically; for any other quote we read
+  // decimals() over RPC (cached). Returns null when there's no provider to ask — the
+  // caller then falls back to DexScreener.
+  private async resolveQuoteDecimals(quoteAddress: string): Promise<number | null> {
+    const key = quoteAddress.toLowerCase();
+    const known = getQuoteToken(key);
+    if (known) return known.decimals;
+    const cached = this.decimalsCache.get(key);
+    if (cached != null) return cached;
+    if (!this.provider) return null;
+    try {
+      const decimals = Number(await new Contract(quoteAddress, DECIMALS_ABI, this.provider).decimals());
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) return null;
+      this.decimalsCache.set(key, decimals);
+      return decimals;
+    } catch {
+      return null;
+    }
   }
 
   // TVL ≈ 2× the value of the quote reserve held by the pool. Reserves come from the
