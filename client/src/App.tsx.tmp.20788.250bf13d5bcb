@@ -1,0 +1,735 @@
+import { useCallback, useEffect, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
+import type { ApiStatus, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
+
+const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/$/, "");
+
+const formatUsd = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0
+  }).format(value);
+
+const formatLaunchUsd = (value: number | null, marketDataUpdatedAt?: string | null) => {
+  if (value == null) return marketDataUpdatedAt ? "No data" : "Pending";
+  return formatUsd(value);
+};
+
+// Per-transaction values can be small, so keep cents for sub-$1k amounts.
+const formatTradeUsd = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: value < 1000 ? 2 : 0
+  }).format(value);
+
+const formatDate = (value: string | null | undefined) =>
+  value
+    ? new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date(value))
+    : "Not available";
+
+const short = (address: string | null | undefined, size = 5) =>
+  !address || address === "unknown"
+    ? "Unknown"
+    : `${address.slice(0, size + 2)}...${address.slice(-4)}`;
+
+const fetchJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+  const response = await fetch(`${API_URL}${path}`, init);
+  if (!response.ok) throw new Error((await response.json()).error || "Request failed");
+  return response.json();
+};
+
+function App() {
+  const [status, setStatus] = useState<ApiStatus | null>(null);
+  const [launches, setLaunches] = useState<Launch[]>([]);
+  const [selected, setSelected] = useState<Launch | null>(null);
+  const [creator, setCreator] = useState<CreatorProfile | null>(null);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [search, setSearch] = useState("");
+  const [poolType, setPoolType] = useState<PoolType>("all");
+  const [sort, setSort] = useState<LaunchSort>("newest");
+  const [minLiquidityUsd, setMinLiquidityUsd] = useState("");
+  const [minVolumeUsd, setMinVolumeUsd] = useState("");
+  const [createdWithinDays, setCreatedWithinDays] = useState("");
+  const [tradeFilter, setTradeFilter] = useState<TradeSide | "all">("all");
+  const [page, setPage] = useState<"overview" | "creators" | "analytics" | "rpc">("overview");
+  const [rpcUsage, setRpcUsage] = useState<RpcUsage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [totalLaunches, setTotalLaunches] = useState(0);
+  const [launchStats, setLaunchStats] = useState<LaunchStats | null>(null);
+  const [error, setError] = useState("");
+  const [refreshingMarket, setRefreshingMarket] = useState(false);
+  const scrollSentinel = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const loadStatus = () => fetchJson<ApiStatus>("/api/status")
+      .then(setStatus)
+      .catch((requestError: Error) => setError(requestError.message));
+    void loadStatus();
+    const statusTimer = setInterval(() => void loadStatus(), 5_000);
+    const loadStats = () => fetchJson<LaunchStats>("/api/launches/stats")
+      .then(setLaunchStats)
+      .catch((requestError: Error) => setError(requestError.message));
+    void loadStats();
+    const statsTimer = setInterval(() => void loadStats(), 15_000);
+
+    return () => {
+      clearInterval(statusTimer);
+      clearInterval(statsTimer);
+    };
+  }, []);
+
+  const loadLaunches = useCallback(async (cursor?: string) => {
+    cursor ? setLoadingMore(true) : setLoading(true);
+    const params = new URLSearchParams({ limit: "30" });
+    if (cursor) params.set("cursor", cursor);
+    if (search.trim()) params.set("search", search.trim());
+    if (poolType !== "all") params.set("poolType", poolType);
+    if (minLiquidityUsd) params.set("minLiquidityUsd", minLiquidityUsd);
+    if (minVolumeUsd) params.set("minVolumeUsd", minVolumeUsd);
+    if (createdWithinDays) params.set("createdWithinDays", createdWithinDays);
+    params.set("sort", sort);
+
+    try {
+      const page = await fetchJson<LaunchPage>(`/api/launches?${params}`);
+      setLaunches((current) => cursor ? [...current, ...page.items] : page.items);
+      setNextCursor(page.nextCursor);
+      setTotalLaunches(page.total);
+      setSelected((currentLaunch) => {
+        if (!currentLaunch) return page.items[0] ?? null;
+        if (cursor) return currentLaunch;
+        return page.items.find((launch) => launch.id === currentLaunch.id) ?? page.items[0] ?? null;
+      });
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, [createdWithinDays, minLiquidityUsd, minVolumeUsd, poolType, search, sort]);
+
+  const refreshMarketData = useCallback(async () => {
+    if (refreshingMarket || status?.mode !== "live") return;
+    setRefreshingMarket(true);
+    setError("");
+    try {
+      await fetchJson<{ updated: number }>("/api/market-data/refresh?limit=50", { method: "POST" });
+      setLaunches([]);
+      setNextCursor(null);
+      await loadLaunches();
+      setLaunchStats(await fetchJson<LaunchStats>("/api/launches/stats"));
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setRefreshingMarket(false);
+    }
+  }, [loadLaunches, refreshingMarket, status?.mode]);
+
+  useEffect(() => {
+    if (page !== "rpc") return;
+    const loadUsage = () => fetchJson<RpcUsage>("/api/rpc-usage")
+      .then(setRpcUsage)
+      .catch((requestError: Error) => setError(requestError.message));
+    void loadUsage();
+    const timer = setInterval(() => void loadUsage(), 3_000);
+    return () => clearInterval(timer);
+  }, [page]);
+
+  useEffect(() => {
+    setLaunches([]);
+    setNextCursor(null);
+    const timer = setTimeout(() => void loadLaunches(), 250);
+    return () => clearTimeout(timer);
+  }, [loadLaunches]);
+
+  useEffect(() => {
+    const sentinel = scrollSentinel.current;
+    if (!sentinel || !nextCursor) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !loadingMore) void loadLaunches(nextCursor);
+    }, { rootMargin: "160px" });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadLaunches, loadingMore, nextCursor]);
+
+  useEffect(() => {
+    if (!selected) return;
+    setCreator(null);
+    setTrades([]);
+    Promise.all([
+      fetchJson<CreatorProfile>(`/api/creators/${selected.creator}`),
+      fetchJson<Trade[]>(`/api/launches/${selected.poolAddress}/trades`)
+    ])
+      .then(([nextCreator, nextTrades]) => {
+        setCreator(nextCreator);
+        setTrades(nextTrades);
+      })
+      .catch((requestError: Error) => setError(requestError.message));
+  }, [selected]);
+
+  const filteredTrades = trades.filter((trade) => tradeFilter === "all" || trade.side === tradeFilter);
+  const buyCount = trades.filter((trade) => trade.side === "buy").length;
+  const sellCount = trades.length - buyCount;
+  return (
+    <main className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">A</div>
+          <div>
+            <strong>Aero Intel</strong>
+            <span>Launch analyzer</span>
+          </div>
+        </div>
+        <nav>
+          <button onClick={() => setPage("overview")} className={`nav-item ${page === "overview" ? "active" : ""}`}><GridIcon /> Overview</button>
+          <button onClick={() => setPage("creators")} className={`nav-item ${page === "creators" ? "active" : ""}`}><UsersIcon /> Creators</button>
+          <button onClick={() => setPage("analytics")} className={`nav-item ${page === "analytics" ? "active" : ""}`}><BarChartIcon /> Analytics</button>
+          <button onClick={() => setPage("rpc")} className={`nav-item ${page === "rpc" ? "active" : ""}`}><PulseIcon /> RPC usage</button>
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="network-card">
+            <span className="eyebrow">Network</span>
+            <strong><i className="status-dot" /> Base mainnet</strong>
+            <small>{status ? (status.mode === "live" ? "RPC connected" : "Demo dataset") : "Connecting..."}</small>
+            {status?.mode === "live" && (
+              <small>
+                {status.indexer?.indexedBlock == null
+                  ? "Preparing index..."
+                  : `Indexed block ${status.indexer.indexedBlock.toLocaleString()}`}
+              </small>
+            )}
+          </div>
+          <span className="version">Aerodrome classic pools</span>
+        </div>
+      </aside>
+
+      <section className="workspace">
+        {page === "rpc" ? <RpcUsagePage usage={rpcUsage} /> : page === "creators" ? <CreatorsPage onError={setError} /> : page === "analytics" ? <AnalyticsPage onError={setError} /> : <>
+        <header className="topbar">
+          <div>
+            <span className="eyebrow">Aerodrome DEX</span>
+            <h1>Launch intelligence</h1>
+          </div>
+          <div className="topbar-actions">
+            {status?.mode === "demo" && <span className="demo-pill">Demo mode</span>}
+            <div className="avatar">PX</div>
+          </div>
+        </header>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <section className="metrics">
+          <Metric label="Indexed launches" value={launchStats?.total ?? totalLaunches} delta={`${launches.length} loaded`} icon={<RocketIcon />} />
+          <Metric label="24h launch volume" value={formatUsd(launchStats?.totalVolumeUsd ?? 0)} delta="Cached market data" icon={<ChartIcon />} />
+          <Metric label="Repeat creators" value={launchStats?.repeatCreators ?? 0} hint="Observed wallets" icon={<WalletIcon />} />
+          <Metric label="Loaded launches" value={launches.length} hint="Current list page" icon={<RocketIcon />} />
+        </section>
+
+        <section className="analyst-grid">
+          <div className="launch-panel panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">Factory index</span>
+                <h2>Recent launches</h2>
+              </div>
+              {status?.mode === "live" && (
+                <button
+                  type="button"
+                  className="refresh-button"
+                  onClick={() => void refreshMarketData()}
+                  disabled={refreshingMarket || loading}
+                  title="Refresh liquidity and volume from DexScreener"
+                >
+                  <RefreshIcon />
+                  {refreshingMarket ? "Refreshing..." : "Refresh market data"}
+                </button>
+              )}
+            </div>
+            <div className="toolbar">
+              <label className="search-box"><SearchIcon /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search token, wallet, pool" /></label>
+              <select className="select-control" value={poolType} onChange={(event) => setPoolType(event.target.value as PoolType)}>
+                <option value="all">All pools</option><option value="volatile">Volatile</option><option value="stable">Stable</option>
+              </select>
+              <select className="select-control" value={sort} onChange={(event) => setSort(event.target.value as LaunchSort)}>
+                <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="liquidity">Liquidity</option><option value="volume">24h volume</option>
+              </select>
+              <select className="select-control" value={createdWithinDays} onChange={(event) => setCreatedWithinDays(event.target.value)}>
+                <option value="">Any token age at LP</option><option value="1">Created &lt; 1d before LP</option><option value="3">Created &lt; 3d before LP</option><option value="7">Created &lt; 1w before LP</option><option value="30">Created &lt; 1mo before LP</option>
+              </select>
+              <input className="number-control" type="number" min="0" value={minLiquidityUsd} onChange={(event) => setMinLiquidityUsd(event.target.value)} placeholder="Min liq $" />
+              <input className="number-control" type="number" min="0" value={minVolumeUsd} onChange={(event) => setMinVolumeUsd(event.target.value)} placeholder="Min vol $" />
+            </div>
+            <div className="launch-table table-shell">
+              <div className="table-row table-head">
+                <span>Pair</span><span>Creator</span><span>Liquidity</span><span>Volume</span>
+              </div>
+              {loading && <div className="empty-state">Indexing launches...</div>}
+              {!loading && launches.map((launch) => (
+                <button
+                  className={`table-row launch-row ${selected?.id === launch.id ? "selected" : ""}`}
+                  key={launch.id}
+                  onClick={() => setSelected(launch)}
+                >
+                  <span className="pair-cell"><b className={`token-logo token-${launch.tokenSymbol.toLowerCase()}`}>{launch.tokenSymbol.slice(0, 1)}</b><span><strong>{launch.tokenSymbol}</strong><small>{launch.quoteSymbol} · {formatDate(launch.createdAt)}</small></span></span>
+                  <span className="mono">{short(launch.creator)}</span>
+                  <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
+                  <span>{formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</span>
+                </button>
+              ))}
+              <div className="scroll-sentinel" ref={scrollSentinel}>{loadingMore ? "Loading more launches..." : nextCursor ? "Scroll for more" : "All launches loaded"}</div>
+            </div>
+          </div>
+
+          <aside className="detail-column">
+            <section className="selected-card panel">
+              {selected ? (
+                <>
+                  <div className="selected-title">
+                    <b className={`token-logo large token-${selected.tokenSymbol.toLowerCase()}`}>{selected.tokenSymbol.slice(0, 1)}</b>
+                    <div><span className="eyebrow">Selected pool</span><h2>{selected.pair}</h2><small className="mono">{short(selected.poolAddress, 7)}</small></div>
+                  </div>
+                  <div className="pool-stats">
+                    <div><span>Pool type</span><strong>{selected.stable ? "Stable" : "Volatile"}</strong></div>
+                    <div><span>Created</span><strong>{formatDate(selected.createdAt)}</strong></div>
+                    <div><span>Block</span><strong>{selected.blockNumber.toLocaleString()}</strong></div>
+                    <div><span>Token created</span><strong>{formatDate(selected.tokenCreatedAt)}</strong></div>
+                    <div><span>Token age at LP</span><strong>{selected.tokenAgeAtLaunchHours != null ? `${selected.tokenAgeAtLaunchHours.toFixed(1)} hours` : "Unknown"}</strong></div>
+                    <div>
+                      <span>Token contract</span>
+                      <strong>
+                        <a className="address-link mono" href={`https://basescan.org/address/${selected.tokenAddress}`} target="_blank" rel="noreferrer">
+                          {short(selected.tokenAddress, 7)} <ArrowIcon />
+                        </a>
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="pool-links">
+                    <a className="primary-button" href={`https://basescan.org/address/${selected.poolAddress}`} target="_blank" rel="noreferrer">Pool on BaseScan <ArrowIcon /></a>
+                    <a className="secondary-button" href={`https://basescan.org/address/${selected.tokenAddress}`} target="_blank" rel="noreferrer">Token on BaseScan <ArrowIcon /></a>
+                  </div>
+                </>
+              ) : <div className="empty-state">Select a launch</div>}
+            </section>
+
+            <CreatorProfilePanel profile={creator} loading={Boolean(selected && !creator)} historyLimit={3} />
+          </aside>
+        </section>
+
+        <section className="flow-panel panel">
+          <div className="panel-heading">
+            <div><span className="eyebrow">Early order flow</span><h2>First 100 buyers & sellers</h2></div>
+            <div className="flow-summary"><span><i className="buy-dot" /> {buyCount} buys</span><span><i className="sell-dot" /> {sellCount} sells</span></div>
+          </div>
+          <div className="toolbar flow-toolbar">
+            <div className="filter-row">
+              {(["all", "buy", "sell"] as const).map((item) => <button key={item} onClick={() => setTradeFilter(item)} className={tradeFilter === item ? "filter active" : "filter"}>{item}</button>)}
+            </div>
+            <span className="muted">{trades.length} indexed trades</span>
+          </div>
+          <div className="trade-table table-shell">
+            <div className="table-row table-head">
+              <span>#</span><span>Side</span><span>Wallet</span><span>Value</span><span>Token amount</span><span>Time</span><span>Tx</span>
+            </div>
+            {filteredTrades.slice(0, 12).map((trade) => (
+              <div className="table-row trade-row" key={trade.id}>
+                <span className="muted">{String(trade.rank).padStart(2, "0")}</span>
+                <span><b className={`side ${trade.side}`}>{trade.side}</b></span>
+                <span className="mono">{short(trade.trader, 7)}</span>
+                <span>{trade.amountUsd != null ? formatTradeUsd(trade.amountUsd) : `${trade.quoteAmount} quote`}</span>
+                <span>{trade.tokenAmount?.toLocaleString() || "On-chain"}</span>
+                <span>{formatDate(trade.timestamp)}</span>
+                <a className="tx-link" href={`https://basescan.org/tx/${trade.txHash}`} target="_blank" rel="noreferrer"><ArrowIcon /></a>
+              </div>
+            ))}
+          </div>
+        </section>
+        </>}
+      </section>
+    </main>
+  );
+}
+
+function CreatorsPage({ onError }: { onError: (message: string) => void }) {
+  const [creators, setCreators] = useState<CreatorSummary[]>([]);
+  const [selected, setSelected] = useState<CreatorSummary | null>(null);
+  const [profile, setProfile] = useState<CreatorProfile | null>(null);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<CreatorSort>("launchCount");
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [totalCreators, setTotalCreators] = useState(0);
+  const scrollSentinel = useRef<HTMLDivElement>(null);
+
+  const loadCreators = useCallback(async (cursor?: string) => {
+    cursor ? setLoadingMore(true) : setLoading(true);
+    const params = new URLSearchParams({ limit: "30", sort });
+    if (cursor) params.set("cursor", cursor);
+    if (search.trim()) params.set("search", search.trim());
+
+    try {
+      const page = await fetchJson<CreatorPage>(`/api/creators?${params}`);
+      setCreators((current) => cursor ? [...current, ...page.items] : page.items);
+      setNextCursor(page.nextCursor);
+      setTotalCreators(page.total);
+      setSelected((currentCreator) => currentCreator ?? page.items[0] ?? null);
+    } catch (requestError) {
+      onError((requestError as Error).message);
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, [onError, search, sort]);
+
+  useEffect(() => {
+    setCreators([]);
+    setNextCursor(null);
+    const timer = setTimeout(() => void loadCreators(), 250);
+    return () => clearTimeout(timer);
+  }, [loadCreators]);
+
+  useEffect(() => {
+    const sentinel = scrollSentinel.current;
+    if (!sentinel || !nextCursor) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !loadingMore) void loadCreators(nextCursor);
+    }, { rootMargin: "160px" });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadCreators, loadingMore, nextCursor]);
+
+  useEffect(() => {
+    if (!selected) {
+      setProfile(null);
+      return;
+    }
+    setProfile(null);
+    fetchJson<CreatorProfile>(`/api/creators/${selected.address}`)
+      .then(setProfile)
+      .catch((requestError: Error) => onError(requestError.message));
+  }, [onError, selected]);
+
+  const totalLaunches = creators.reduce((sum, creator) => sum + creator.launchCount, 0);
+  const repeatCreators = creators.filter((creator) => creator.launchCount > 1).length;
+
+  return <>
+    <header className="topbar">
+      <div>
+        <span className="eyebrow">Wallet index</span>
+        <h1>Creators</h1>
+      </div>
+    </header>
+
+    <section className="metrics">
+      <Metric label="Unique creators" value={totalCreators} delta={`${creators.length} loaded`} icon={<UsersIcon />} />
+      <Metric label="Loaded launches" value={totalLaunches} hint="From visible creators" icon={<RocketIcon />} />
+      <Metric label="Repeat creators" value={repeatCreators} hint="More than one launch" icon={<WalletIcon />} />
+      <Metric label="Top creator" value={creators[0]?.launchCount ?? 0} hint={creators[0] ? short(creators[0].address, 6) : "Loading"} icon={<ChartIcon />} />
+    </section>
+
+    <section className="analyst-grid creators-grid">
+      <div className="launch-panel panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">Launch wallets</span>
+            <h2>All creators</h2>
+          </div>
+        </div>
+        <div className="toolbar">
+          <label className="search-box"><SearchIcon /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search wallet address" /></label>
+          <select className="select-control" value={sort} onChange={(event) => setSort(event.target.value as CreatorSort)}>
+            <option value="launchCount">Most launches</option>
+            <option value="newest">Latest launch</option>
+            <option value="oldest">First launch</option>
+          </select>
+        </div>
+        <div className="creator-table table-shell">
+          <div className="table-row table-head">
+            <span>#</span><span>Creator</span><span>Token launches</span><span>First launch</span><span>Latest launch</span>
+          </div>
+          {loading && <div className="empty-state">Loading creators...</div>}
+          {!loading && creators.map((creator, index) => (
+            <button
+              className={`table-row creator-row ${selected?.address === creator.address ? "selected" : ""}`}
+              key={creator.address}
+              onClick={() => setSelected(creator)}
+            >
+              <span className="muted">{String(index + 1).padStart(2, "0")}</span>
+              <span className="mono">{short(creator.address, 8)}</span>
+              <span><strong>{creator.launchCount}</strong></span>
+              <span>{formatDate(creator.firstLaunchAt)}</span>
+              <span>{formatDate(creator.lastLaunchAt)}</span>
+            </button>
+          ))}
+          <div className="scroll-sentinel" ref={scrollSentinel}>{loadingMore ? "Loading more creators..." : nextCursor ? "Scroll for more" : "All creators loaded"}</div>
+        </div>
+      </div>
+
+      <aside className="detail-column creators-detail">
+        <CreatorProfilePanel profile={profile} loading={Boolean(selected && !profile)} emptyMessage="Select a creator" />
+      </aside>
+    </section>
+  </>;
+}
+
+function CreatorProfilePanel({
+  profile,
+  loading,
+  emptyMessage = "Select a launch",
+  historyLimit
+}: {
+  profile: CreatorProfile | null;
+  loading: boolean;
+  emptyMessage?: string;
+  historyLimit?: number;
+}) {
+  const launches = historyLimit != null
+    ? (profile?.previousLaunches.slice(0, historyLimit) ?? [])
+    : (profile?.previousLaunches ?? []);
+
+  return (
+    <section className="creator-card panel">
+      <div className="panel-heading compact">
+        <div>
+          <span className="eyebrow">Wallet intelligence</span>
+          <h2>Creator profile</h2>
+        </div>
+        <WalletIcon />
+      </div>
+      {profile ? (
+        <div className="creator-profile-body">
+          <div className="wallet-address">
+            <strong className="mono">{short(profile.address, 8)}</strong>
+            <a href={`https://basescan.org/address/${profile.address}`} target="_blank" rel="noreferrer"><ArrowIcon /></a>
+          </div>
+          <div className="creator-grid">
+            <div><span>Token launches</span><strong>{profile.launchCount}</strong></div>
+            <div><span>First funding</span><strong>{formatDate(profile.firstFundedAt)}</strong></div>
+            <div><span>Funding amount</span><strong>{profile.fundingAmount || "Add API key"}</strong></div>
+            <div><span>Funding source</span><strong className="mono">{short(profile.fundingSource, 6)}</strong></div>
+          </div>
+          {profile.labels.length > 0 && (
+            <div className="tag-row">{profile.labels.map((label) => <span className="tag" key={label}>{label}</span>)}</div>
+          )}
+          <div className="history-heading">
+            <strong>Launch history</strong>
+            <span>{profile.launchCount} observed</span>
+          </div>
+          <div className="mini-history">
+            {launches.length > 0 ? launches.map((launch) => (
+              <div className="mini-history-item" key={launch.id}>
+                <b className="mini-dot" />
+                <div className="mini-history-main">
+                  <strong>{launch.pair}</strong>
+                  <span className="history-meta">{formatDate(launch.createdAt)}</span>
+                </div>
+                <div className="mini-history-stats">
+                  <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)} liq</span>
+                  <span>{formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)} vol</span>
+                </div>
+              </div>
+            )) : <div className="empty-state compact">No launches indexed yet</div>}
+          </div>
+        </div>
+      ) : loading ? (
+        <div className="empty-state compact">Loading wallet history...</div>
+      ) : (
+        <div className="empty-state compact">{emptyMessage}</div>
+      )}
+    </section>
+  );
+}
+
+function AnalyticsPage({ onError }: { onError: (message: string) => void }) {
+  const [analytics, setAnalytics] = useState<LaunchDailyAnalytics | null>(null);
+  const [days, setDays] = useState(30);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchJson<LaunchDailyAnalytics>(`/api/launches/analytics/daily?days=${days}`)
+      .then(setAnalytics)
+      .catch((requestError: Error) => onError(requestError.message))
+      .finally(() => setLoading(false));
+  }, [days, onError]);
+
+  const points = analytics?.points ?? [];
+  const totalLaunches = points.reduce((sum, point) => sum + point.launchCount, 0);
+  const totalVolume = points.reduce((sum, point) => sum + point.volumeUsd, 0);
+  const peakLaunches = Math.max(...points.map((point) => point.launchCount), 0);
+  const peakVolume = Math.max(...points.map((point) => point.volumeUsd), 0);
+  const avgLaunches = points.length ? (totalLaunches / points.length).toFixed(1) : "0";
+  const busiestDay = points.reduce<DailyAnalyticsPoint | null>(
+    (best, point) => (!best || point.launchCount > best.launchCount ? point : best),
+    null
+  );
+
+  return <>
+    <header className="topbar">
+      <div>
+        <span className="eyebrow">Trend index</span>
+        <h1>Analytics</h1>
+      </div>
+      <div className="topbar-actions">
+        <select className="select-control analytics-range" value={days} onChange={(event) => setDays(Number(event.target.value))}>
+          <option value={7}>Last 7 days</option>
+          <option value={14}>Last 14 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={60}>Last 60 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
+      </div>
+    </header>
+
+    <section className="metrics">
+      <Metric label="Launches in range" value={totalLaunches} delta={`${days} day window`} icon={<RocketIcon />} />
+      <Metric label="Volume in range" value={formatUsd(totalVolume)} hint="24h volume at index time" icon={<ChartIcon />} />
+      <Metric label="Daily average" value={avgLaunches} hint="Launches per day" icon={<BarChartIcon />} />
+      <Metric label="Busiest day" value={busiestDay?.launchCount ?? 0} hint={busiestDay ? formatChartDate(busiestDay.date) : "Loading"} icon={<PulseIcon />} />
+    </section>
+
+    <section className="analytics-grid">
+      <article className="panel chart-panel">
+        <div className="panel-heading compact">
+          <div>
+            <span className="eyebrow">Launch activity</span>
+            <h2>Daily launch count</h2>
+          </div>
+          <span className="chart-peak">Peak {peakLaunches}</span>
+        </div>
+        {loading ? <div className="empty-state">Loading analytics...</div> : (
+          <DailyBarChart
+            points={points}
+            valueKey="launchCount"
+            formatValue={(value) => String(value)}
+            color="#8effbd"
+          />
+        )}
+      </article>
+
+      <article className="panel chart-panel">
+        <div className="panel-heading compact">
+          <div>
+            <span className="eyebrow">Market activity</span>
+            <h2>Daily volume</h2>
+          </div>
+          <span className="chart-peak">Peak {formatUsd(peakVolume)}</span>
+        </div>
+        {loading ? <div className="empty-state">Loading analytics...</div> : (
+          <DailyBarChart
+            points={points}
+            valueKey="volumeUsd"
+            formatValue={(value) => formatUsd(value)}
+            color="#7ab8ff"
+          />
+        )}
+      </article>
+    </section>
+  </>;
+}
+
+function DailyBarChart({
+  points,
+  valueKey,
+  formatValue,
+  color
+}: {
+  points: DailyAnalyticsPoint[];
+  valueKey: "launchCount" | "volumeUsd";
+  formatValue: (value: number) => string;
+  color: string;
+}) {
+  const width = 640;
+  const height = 240;
+  const padding = { top: 18, right: 12, bottom: 34, left: 12 };
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(...points.map((point) => point[valueKey]), 1);
+  const barGap = 4;
+  const barWidth = Math.max((chartWidth - barGap * (points.length - 1)) / points.length, 2);
+  const labelEvery = points.length > 20 ? Math.ceil(points.length / 8) : points.length > 12 ? 2 : 1;
+
+  return (
+    <div className="chart-wrap">
+      <svg className="chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Daily ${valueKey} chart`}>
+        {[0.25, 0.5, 0.75, 1].map((ratio) => {
+          const y = padding.top + chartHeight * (1 - ratio);
+          return <line key={ratio} x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="chart-grid-line" />;
+        })}
+        {points.map((point, index) => {
+          const value = point[valueKey];
+          const barHeight = (value / maxValue) * chartHeight;
+          const x = padding.left + index * (barWidth + barGap);
+          const y = padding.top + chartHeight - barHeight;
+          return (
+            <g key={point.date}>
+              <title>{`${formatChartDate(point.date)}: ${formatValue(value)}`}</title>
+              <rect
+                x={x}
+                y={y}
+                width={barWidth}
+                height={Math.max(barHeight, value > 0 ? 2 : 0)}
+                rx={2}
+                fill={color}
+                opacity={value > 0 ? 0.92 : 0.18}
+              />
+              {index % labelEvery === 0 && (
+                <text x={x + barWidth / 2} y={height - 10} className="chart-label" textAnchor="middle">
+                  {formatChartDate(point.date, true)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+const formatChartDate = (value: string, shortLabel = false) => {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return shortLabel
+    ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(date)
+    : new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(date);
+};
+
+function RpcUsagePage({ usage }: { usage: RpcUsage | null }) {
+  return <><header className="topbar"><div><span className="eyebrow">Base provider</span><h1>RPC usage</h1></div></header>
+    <section className="metrics">
+      <Metric label="Total RPC calls" value={usage?.totalCalls ?? 0} hint="Since API startup" icon={<PulseIcon />} />
+      <Metric label="RPC errors" value={usage?.totalErrors ?? 0} hint="Provider failures" icon={<ShieldIcon />} danger />
+      <Metric label="Tracked methods" value={usage?.methods.length ?? 0} hint="JSON-RPC methods" icon={<ChartIcon />} />
+      <Metric label="Tracking since" value={usage ? formatDate(usage.startedAt) : "Loading"} hint="Current API process" icon={<RocketIcon />} />
+    </section>
+    <section className="panel rpc-panel"><div className="panel-heading"><div><span className="eyebrow">Method breakdown</span><h2>Base JSON-RPC calls</h2></div></div>
+      <div className="rpc-table"><div className="table-row table-head"><span>Method</span><span>Calls</span><span>Errors</span><span>Last called</span></div>
+        {usage?.methods.map((method) => <div className="table-row rpc-row" key={method.method}><strong className="mono">{method.method}</strong><span>{method.count.toLocaleString()}</span><span>{method.errors}</span><span>{formatDate(method.lastCalledAt)}</span></div>)}
+      </div>
+    </section></>;
+}
+
+function Metric({ label, value, delta, hint, icon, danger }: { label: string; value: string | number; delta?: string; hint?: string; icon: ReactNode; danger?: boolean }) {
+  return <article className="metric-card panel"><div className={`metric-icon ${danger ? "danger" : ""}`}>{icon}</div><div><span>{label}</span><strong>{value}</strong><small className={danger ? "danger-text" : ""}>{delta || hint}</small></div></article>;
+}
+
+const Icon = ({ children }: PropsWithChildren) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{children}</svg>;
+const UsersIcon = () => <Icon><path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1" /><circle cx="9" cy="7" r="3" /><path d="M22 19v-1a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></Icon>;
+const GridIcon = () => <Icon><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></Icon>;
+const PulseIcon = () => <Icon><path d="M3 12h4l3-7 4 14 3-7h4" /></Icon>;
+const WalletIcon = () => <Icon><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H20v16H6.5A2.5 2.5 0 0 1 4 17.5z" /><path d="M4 7h16" /><path d="M15 13h2" /></Icon>;
+const RocketIcon = () => <Icon><path d="M14 6c3-3 6-3 7-3 0 1 0 4-3 7l-4 4-4-4z" /><path d="m10 10-4 1-3 3 7 1 1 6 3-3 1-4" /><path d="M5 19c1-2 2-3 4-4" /></Icon>;
+const ChartIcon = () => <Icon><path d="M4 19V5" /><path d="M4 19h16" /><path d="m7 14 4-4 3 3 5-6" /></Icon>;
+const BarChartIcon = () => <Icon><path d="M5 19V9" /><path d="M10 19V5" /><path d="M15 19v-6" /><path d="M20 19V3" /><path d="M4 19h16" /></Icon>;
+const ShieldIcon = () => <Icon><path d="M12 3 20 6v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" /><path d="M12 8v4" /><path d="M12 16h.01" /></Icon>;
+const SearchIcon = () => <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></Icon>;
+const ArrowIcon = () => <Icon><path d="M7 17 17 7" /><path d="M8 7h9v9" /></Icon>;
+const RefreshIcon = () => <Icon><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></Icon>;
+
+export default App;

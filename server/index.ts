@@ -24,7 +24,7 @@ const analyzer = new AerodromeAnalyzer({
 });
 let indexer: LaunchIndexer | null = null;
 
-app.use(cors());
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 app.get("/api/status", (_request, response) => {
