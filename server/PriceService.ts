@@ -1,5 +1,5 @@
 import type { EtherscanService } from "./EtherscanService.js";
-import { STABLE_QUOTES, WETH } from "./tokens.js";
+import { STABLE_QUOTES, WETH } from "./skills/DexAdapter.js";
 
 interface DexScreenerToken {
   priceUsd?: string;

@@ -3,6 +3,7 @@ import type { CreatorProfile, CreatorSummary, DailyAnalyticsPoint, Launch, Launc
 export const demoLaunches: Launch[] = [
   {
     id: "0x08d7a39c3f546a781ff991cc28a31f9aa9c42401",
+    dex: "aerodrome",
     poolAddress: "0x08d7a39c3f546a781ff991cc28a31f9aa9c42401",
     tokenAddress: "0x87f47f9b081a4a87e7e3cb7d288f7473d6c5b101",
     tokenSymbol: "NOVA",
@@ -14,7 +15,8 @@ export const demoLaunches: Launch[] = [
     creator: "0x74fca2de9ff5e05a802d41e190f4eb6ebc76ac81",
     createdAt: "2026-05-31T19:42:00.000Z",
     blockNumber: 31058211,
-    stable: false,
+    poolType: "volatile",
+    poolTypeLabel: "Volatile",
     liquidityUsd: 84210,
     volumeUsd: 391420,
     firstTrades: 100,
@@ -22,6 +24,7 @@ export const demoLaunches: Launch[] = [
   },
   {
     id: "0xa92e6fb936ed12b26f5962ec2559df73f3eeb502",
+    dex: "aerodrome",
     poolAddress: "0xa92e6fb936ed12b26f5962ec2559df73f3eeb502",
     tokenAddress: "0x924820b47126bda8dfd04d43c191e9705a1cb102",
     tokenSymbol: "FLUX",
@@ -33,7 +36,8 @@ export const demoLaunches: Launch[] = [
     creator: "0x45af1bb84985cb89083be2b9827449cd1034ee72",
     createdAt: "2026-05-31T16:18:00.000Z",
     blockNumber: 31052760,
-    stable: false,
+    poolType: "volatile",
+    poolTypeLabel: "Volatile",
     liquidityUsd: 127900,
     volumeUsd: 218340,
     firstTrades: 100,
@@ -41,6 +45,7 @@ export const demoLaunches: Launch[] = [
   },
   {
     id: "0xc5d74f1339cbba61e3d2272e0ca47e84d3c5b203",
+    dex: "aerodrome",
     poolAddress: "0xc5d74f1339cbba61e3d2272e0ca47e84d3c5b203",
     tokenAddress: "0xaf41a2de9d5d32cb9d3d874212e9cb9c53df3103",
     tokenSymbol: "MINT",
@@ -52,7 +57,8 @@ export const demoLaunches: Launch[] = [
     creator: "0x74fca2de9ff5e05a802d41e190f4eb6ebc76ac81",
     createdAt: "2026-05-30T09:07:00.000Z",
     blockNumber: 30941338,
-    stable: false,
+    poolType: "volatile",
+    poolTypeLabel: "Volatile",
     liquidityUsd: 42680,
     volumeUsd: 88630,
     firstTrades: 94,
@@ -60,6 +66,7 @@ export const demoLaunches: Launch[] = [
   },
   {
     id: "0x7ab29b5090abe11c2409f6984b33f99778bf6404",
+    dex: "aerodrome",
     poolAddress: "0x7ab29b5090abe11c2409f6984b33f99778bf6404",
     tokenAddress: "0xf534ff993dce9d40a6995bc934623d29d36cb104",
     tokenSymbol: "OPAL",
@@ -71,7 +78,8 @@ export const demoLaunches: Launch[] = [
     creator: "0x3be6dbdbd4795723bb42af035e6fb599ebf02977",
     createdAt: "2026-05-29T22:31:00.000Z",
     blockNumber: 30903766,
-    stable: true,
+    poolType: "stable",
+    poolTypeLabel: "Stable",
     liquidityUsd: 310500,
     volumeUsd: 190240,
     firstTrades: 100,
@@ -79,6 +87,7 @@ export const demoLaunches: Launch[] = [
   },
   {
     id: "0xf8072fe0179d639c27422112a2b99bb21ced2505",
+    dex: "aerodrome",
     poolAddress: "0xf8072fe0179d639c27422112a2b99bb21ced2505",
     tokenAddress: "0xac4bcc5a4874bb09ae7860cb0d427baedbecc105",
     tokenSymbol: "EMBER",
@@ -90,7 +99,8 @@ export const demoLaunches: Launch[] = [
     creator: "0xa3ee959813eafe9df1f7428f9160d60354e73cc9",
     createdAt: "2026-05-29T11:54:00.000Z",
     blockNumber: 30866641,
-    stable: false,
+    poolType: "volatile",
+    poolTypeLabel: "Volatile",
     liquidityUsd: 19120,
     volumeUsd: 72210,
     firstTrades: 67,
@@ -98,6 +108,7 @@ export const demoLaunches: Launch[] = [
   },
   {
     id: "0x496ad4c89b7414433b4a59dbbe49cad4a34a4606",
+    dex: "aerodrome",
     poolAddress: "0x496ad4c89b7414433b4a59dbbe49cad4a34a4606",
     tokenAddress: "0xe9fddc8af2db5e0219049af44a412663a11eb106",
     tokenSymbol: "VECTOR",
@@ -109,11 +120,117 @@ export const demoLaunches: Launch[] = [
     creator: "0x8382d2d1fc40b70868586f0d4e0f254c9378bd38",
     createdAt: "2026-05-28T18:22:00.000Z",
     blockNumber: 30805106,
-    stable: false,
+    poolType: "volatile",
+    poolTypeLabel: "Volatile",
     liquidityUsd: 63940,
     volumeUsd: 41290,
     firstTrades: 42,
     risk: "medium"
+  },
+  {
+    id: "0x1c0a3f7b2d9e54a6b8f10c2d3e4f5061728394a7",
+    dex: "uniswap-v3",
+    poolAddress: "0x1c0a3f7b2d9e54a6b8f10c2d3e4f5061728394a7",
+    tokenAddress: "0x55b2c1d9e3f4a6b7c8091a2b3c4d5e6f70819207",
+    tokenSymbol: "ORBIT",
+    tokenCreatedAt: "2026-05-31T12:05:00.000Z",
+    tokenCreatedBlock: 31045220,
+    tokenAgeAtLaunchHours: 1,
+    quoteSymbol: "WETH",
+    pair: "ORBIT / WETH",
+    creator: "0x9a17b3c2de45f6a7b8091c2d3e4f50617283a4b9",
+    createdAt: "2026-05-31T13:05:00.000Z",
+    blockNumber: 31047020,
+    poolType: "3000",
+    poolTypeLabel: "0.30%",
+    liquidityUsd: 256800,
+    volumeUsd: 612300,
+    firstTrades: 100,
+    risk: "medium"
+  },
+  {
+    id: "0x2d1b4f8c3eaf65b7c9091d2e3f405162839405b8",
+    dex: "uniswap-v3",
+    poolAddress: "0x2d1b4f8c3eaf65b7c9091d2e3f405162839405b8",
+    tokenAddress: "0x66c3d2eaf405b6c7d8192a3b4c5d6e7f8091a3b0",
+    tokenSymbol: "PIXEL",
+    tokenCreatedAt: "2026-05-30T20:48:00.000Z",
+    tokenCreatedBlock: 30978500,
+    tokenAgeAtLaunchHours: 1,
+    quoteSymbol: "USDC",
+    pair: "PIXEL / USDC",
+    creator: "0x74fca2de9ff5e05a802d41e190f4eb6ebc76ac81",
+    createdAt: "2026-05-30T21:48:00.000Z",
+    blockNumber: 30980300,
+    poolType: "500",
+    poolTypeLabel: "0.05%",
+    liquidityUsd: 489100,
+    volumeUsd: 845600,
+    firstTrades: 100,
+    risk: "low"
+  },
+  {
+    id: "0x3e2c5a9d4fbf76c8da192e3f405162738495061c",
+    dex: "uniswap-v3",
+    poolAddress: "0x3e2c5a9d4fbf76c8da192e3f405162738495061c",
+    tokenAddress: "0x77d4e3fb506c7d8e92a3b4c5d6e7f8091a2b4c01",
+    tokenSymbol: "QUARK",
+    tokenCreatedAt: "2026-05-29T06:12:00.000Z",
+    tokenCreatedBlock: 30853110,
+    tokenAgeAtLaunchHours: 1,
+    quoteSymbol: "WETH",
+    pair: "QUARK / WETH",
+    creator: "0x55ac1de9ff5e05a802d41e190f4eb6ebc76ac82",
+    createdAt: "2026-05-29T07:12:00.000Z",
+    blockNumber: 30854910,
+    poolType: "10000",
+    poolTypeLabel: "1.00%",
+    liquidityUsd: 38400,
+    volumeUsd: 51720,
+    firstTrades: 73,
+    risk: "high"
+  },
+  {
+    id: "0x4f3d6bae50cf87d9eb1a2f3405162738495061d2",
+    dex: "uniswap-v2",
+    poolAddress: "0x4f3d6bae50cf87d9eb1a2f3405162738495061d2",
+    tokenAddress: "0x88e5f40617d8e9fa2b3c4d5e6f7809102b3c4d12",
+    tokenSymbol: "GROK",
+    tokenCreatedAt: "2026-05-31T09:33:00.000Z",
+    tokenCreatedBlock: 31040120,
+    tokenAgeAtLaunchHours: 1,
+    quoteSymbol: "WETH",
+    pair: "GROK / WETH",
+    creator: "0x45af1bb84985cb89083be2b9827449cd1034ee72",
+    createdAt: "2026-05-31T10:33:00.000Z",
+    blockNumber: 31041920,
+    poolType: "volatile",
+    poolTypeLabel: "Volatile",
+    liquidityUsd: 71500,
+    volumeUsd: 132450,
+    firstTrades: 88,
+    risk: "medium"
+  },
+  {
+    id: "0x5a4e7cbf61d098eafc1b2e3405162738495061e3",
+    dex: "uniswap-v2",
+    poolAddress: "0x5a4e7cbf61d098eafc1b2e3405162738495061e3",
+    tokenAddress: "0x99f6051728e9fab3c4d5e6f78091023b4c5d6e23",
+    tokenSymbol: "BASED",
+    tokenCreatedAt: "2026-05-30T03:27:00.000Z",
+    tokenCreatedBlock: 30912740,
+    tokenAgeAtLaunchHours: 1,
+    quoteSymbol: "USDC",
+    pair: "BASED / USDC",
+    creator: "0x8382d2d1fc40b70868586f0d4e0f254c9378bd38",
+    createdAt: "2026-05-30T04:27:00.000Z",
+    blockNumber: 30914540,
+    poolType: "volatile",
+    poolTypeLabel: "Volatile",
+    liquidityUsd: 24300,
+    volumeUsd: 60780,
+    firstTrades: 54,
+    risk: "high"
   }
 ];
 
@@ -142,8 +259,8 @@ export const buildDemoTrades = (launch: Launch): Trade[] =>
     };
   });
 
-export const buildDemoCreator = (creator: string): CreatorProfile => {
-  const previousLaunches = demoLaunches.filter((launch) => launch.creator === creator);
+export const buildDemoCreator = (creator: string, launches: Launch[] = demoLaunches): CreatorProfile => {
+  const previousLaunches = launches.filter((launch) => launch.creator === creator);
   return {
     address: creator,
     firstFundedAt: "2026-04-16T08:22:14.000Z",
@@ -171,9 +288,9 @@ function fillDailyPoints(days: number, aggregated: DailyAnalyticsPoint[]): Daily
   return points;
 }
 
-export const buildDemoDailyAnalytics = (days: number): LaunchDailyAnalytics => {
+export const buildDemoDailyAnalytics = (days: number, launches: Launch[] = demoLaunches): LaunchDailyAnalytics => {
   const grouped = new Map<string, DailyAnalyticsPoint>();
-  for (const launch of demoLaunches) {
+  for (const launch of launches) {
     const date = launch.createdAt.slice(0, 10);
     const existing = grouped.get(date);
     if (existing) {
@@ -186,9 +303,9 @@ export const buildDemoDailyAnalytics = (days: number): LaunchDailyAnalytics => {
   return { days, points: fillDailyPoints(days, [...grouped.values()]) };
 };
 
-export const buildDemoCreators = (): CreatorSummary[] => {
+export const buildDemoCreators = (launches: Launch[] = demoLaunches): CreatorSummary[] => {
   const grouped = new Map<string, CreatorSummary>();
-  for (const launch of demoLaunches) {
+  for (const launch of launches) {
     const existing = grouped.get(launch.creator);
     if (existing) {
       existing.launchCount += 1;

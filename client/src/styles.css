@@ -9,7 +9,9 @@ svg { width: 18px; height: 18px; }
 .app-shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
 .sidebar { border-right: 1px solid #1d2431; background: rgba(8, 11, 18, .88); padding: 24px 16px; display: flex; flex-direction: column; }
 .brand, .selected-title, .topbar, .topbar-actions, .panel-heading, .wallet-address, .flow-summary { display: flex; align-items: center; }
-.brand { gap: 11px; margin: 0 8px 38px; }
+.brand { gap: 11px; margin: 0 8px 16px; }
+.dex-switcher { display: flex; flex-direction: column; gap: 6px; margin: 0 8px 28px; }
+.dex-switcher .select-control { width: 100%; min-width: 0; padding: 9px 10px; font-size: 12px; }
 .brand-mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 11px; color: #081018; background: #8effbd; font-weight: 800; }
 .brand strong, .brand span { display: block; }
 .brand strong { font-size: 14px; }

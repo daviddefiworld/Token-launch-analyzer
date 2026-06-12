@@ -1,10 +1,14 @@
 export type RiskLevel = "low" | "medium" | "high" | "unrated";
 export type TradeSide = "buy" | "sell";
 export type LaunchSort = "newest" | "oldest" | "liquidity" | "volume";
-export type PoolType = "all" | "stable" | "volatile";
+// Pool-type filter value. "all" plus whatever categories the selected DEX exposes
+// (Aerodrome: "stable"/"volatile"; Uniswap V3: fee tiers like "3000"; Uniswap V2: "v2").
+export type PoolType = string;
 
 export interface Launch {
   id: string;
+  // DEX adapter that produced this launch (e.g. "aerodrome", "uniswap-v2", "uniswap-v3").
+  dex: string;
   poolAddress: string;
   tokenAddress: string;
   tokenSymbol: string;
@@ -17,12 +21,27 @@ export interface Launch {
   creator: string;
   createdAt: string;
   blockNumber: number;
-  stable: boolean;
+  // Normalized pool-type machine value and display label (see DexAdapter.ParsedLaunchEvent).
+  poolType: string;
+  poolTypeLabel: string;
   liquidityUsd: number | null;
   volumeUsd: number | null;
   marketDataUpdatedAt?: string | null;
   firstTrades: number | null;
   risk: RiskLevel;
+}
+
+export interface PoolTypeOption {
+  value: string;
+  label: string;
+}
+
+export interface DexInfo {
+  id: string;
+  label: string;
+  network: string;
+  factory: string;
+  poolTypeOptions: PoolTypeOption[];
 }
 
 export interface LaunchPage {

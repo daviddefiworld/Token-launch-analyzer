@@ -1,14 +1,15 @@
-import { Contract, Interface, formatEther, formatUnits, type Block, type Filter, type Log } from "ethers";
+import { Contract, formatEther, formatUnits, type Block, type Filter, type Log } from "ethers";
 import { buildDemoCreator, buildDemoCreators, buildDemoDailyAnalytics, buildDemoTrades, demoLaunches } from "./demoData.js";
-import type { CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, TokenCreation, Trade } from "../types.js";
+import type { CreatorPage, CreatorProfile, CreatorSort, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, TokenCreation, Trade } from "../types.js";
 import type { LaunchRepository } from "./LaunchRepository.js";
 import type { EtherscanService } from "./EtherscanService.js";
 import type { PriceService } from "./PriceService.js";
-import { RpcMetricsProvider } from "./RpcMetricsProvider.js";
-import { getQuoteToken, isKnownQuote, isQuoteToken0 } from "./tokens.js";
+import type { RpcMetricsProvider } from "./RpcMetricsProvider.js";
+import { getQuoteToken, isKnownQuote, isQuoteToken0, type DexAdapter } from "./skills/DexAdapter.js";
 
 interface AnalyzerOptions {
-  rpcUrl?: string;
+  adapter: DexAdapter;
+  provider?: RpcMetricsProvider | null;
   etherscan?: EtherscanService | null;
   priceService?: PriceService | null;
   logChunk?: string | number;
@@ -16,6 +17,12 @@ interface AnalyzerOptions {
 }
 
 const FIRST_TRADE_SCAN_BLOCKS = 100_000;
+
+// Generic ERC20 metadata reads, shared by every DEX adapter.
+const TOKEN_ABI = [
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)"
+];
 
 interface LogRange extends Filter {
   fromBlock: number;
@@ -34,41 +41,32 @@ interface TradeQuote {
   quotePriceUsd: number | null;
 }
 
-const FACTORY_ADDRESS = "0x420DD381b31aEf6683db6B902084cB0FFECe40Da";
-const FACTORY_ABI = [
-  "event PoolCreated(address indexed token0,address indexed token1,bool indexed stable,address pool,uint256)"
-];
-const POOL_ABI = [
-  "event Swap(address indexed sender,address indexed to,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out)",
-  "function token0() view returns (address)",
-  "function token1() view returns (address)"
-];
-const TOKEN_ABI = [
-  "function symbol() view returns (string)",
-  "function decimals() view returns (uint8)"
-];
-
-export class AerodromeAnalyzer {
+// DEX-agnostic launch analyzer. All chain-specific decoding (factory/pool events, swap
+// math, reserves, quote tokens) is delegated to the injected DexAdapter, so one instance
+// exists per supported DEX.
+export class LaunchAnalyzer {
+  readonly adapter: DexAdapter;
   provider: RpcMetricsProvider | null;
   etherscan: EtherscanService | null;
   priceService: PriceService | null;
   logChunk: number;
   repository: LaunchRepository | null;
-  factoryInterface: Interface;
-  poolInterface: Interface;
   private readonly blocks = new Map<number, Block>();
   private readonly tokenSymbols = new Map<string, string>();
   private readonly tokenDecimals = new Map<string, number>();
   private readonly poolMetadata = new Map<string, { quoteAddress: string; quoteIsToken0: boolean; quoteDecimals: number }>();
 
-  constructor({ rpcUrl, etherscan = null, priceService = null, logChunk = 2000, repository = null }: AnalyzerOptions = {}) {
-    this.provider = rpcUrl ? new RpcMetricsProvider(rpcUrl) : null;
+  constructor({ adapter, provider = null, etherscan = null, priceService = null, logChunk = 2000, repository = null }: AnalyzerOptions) {
+    this.adapter = adapter;
+    this.provider = provider;
     this.etherscan = etherscan;
     this.priceService = priceService;
     this.logChunk = Number(logChunk);
     this.repository = repository;
-    this.factoryInterface = new Interface(FACTORY_ABI);
-    this.poolInterface = new Interface(POOL_ABI);
+  }
+
+  get dexId(): string {
+    return this.adapter.id;
   }
 
   get mode(): "demo" | "live" {
@@ -76,7 +74,10 @@ export class AerodromeAnalyzer {
   }
 
   async getLaunches(options: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; createdWithinDays?: number; sort: LaunchSort }): Promise<LaunchPage> {
-    if (!this.provider) return { items: demoLaunches.slice(0, options.limit), nextCursor: null, total: demoLaunches.length };
+    if (!this.provider) {
+      const items = this.#demoLaunches();
+      return { items: items.slice(0, options.limit), nextCursor: null, total: items.length };
+    }
     return this.#requireRepository().getPage(options);
   }
 
@@ -86,24 +87,25 @@ export class AerodromeAnalyzer {
 
   async getLaunchStats(): Promise<LaunchStats> {
     if (!this.provider) {
+      const launches = this.#demoLaunches();
       const weekAgo = Date.now() - 7 * 86_400_000;
       const dayAgo = Date.now() - 86_400_000;
-      const sumVolumeSince = (since: number) => demoLaunches
+      const sumVolumeSince = (since: number) => launches
         .filter((launch) => new Date(launch.createdAt).getTime() >= since)
         .reduce((sum, launch) => sum + (launch.volumeUsd ?? 0), 0);
       return {
-        total: demoLaunches.length,
-        totalVolumeUsd: demoLaunches.reduce((sum, launch) => sum + (launch.volumeUsd ?? 0), 0),
+        total: launches.length,
+        totalVolumeUsd: launches.reduce((sum, launch) => sum + (launch.volumeUsd ?? 0), 0),
         weekVolumeUsd: sumVolumeSince(weekAgo),
         dayVolumeUsd: sumVolumeSince(dayAgo),
-        repeatCreators: new Set(demoLaunches.filter((launch) => demoLaunches.filter((item) => item.creator === launch.creator).length > 1).map((launch) => launch.creator)).size,
+        repeatCreators: new Set(launches.filter((launch) => launches.filter((item) => item.creator === launch.creator).length > 1).map((launch) => launch.creator)).size,
       };
     }
     return this.#requireRepository().getStats();
   }
 
   async getDailyAnalytics(days: number): Promise<LaunchDailyAnalytics> {
-    if (!this.provider) return buildDemoDailyAnalytics(days);
+    if (!this.provider) return buildDemoDailyAnalytics(days, this.#demoLaunches());
     return this.#requireRepository().getDailyAnalytics(days);
   }
 
@@ -113,8 +115,8 @@ export class AerodromeAnalyzer {
 
   async getLaunchesInBlockRange(fromBlock: number, toBlock: number): Promise<Launch[]> {
     const logs = await this.#requireProvider().getLogs({
-      address: FACTORY_ADDRESS,
-      topics: [this.factoryInterface.getEvent("PoolCreated")!.topicHash],
+      address: this.adapter.factoryAddress,
+      topics: [this.adapter.factoryInterface.getEvent(this.adapter.launchEventName)!.topicHash],
       fromBlock,
       toBlock
     });
@@ -123,7 +125,7 @@ export class AerodromeAnalyzer {
   }
 
   async getCreator(address: string): Promise<CreatorProfile> {
-    if (!this.provider) return buildDemoCreator(address);
+    if (!this.provider) return buildDemoCreator(address, this.#demoLaunches());
     const previousLaunches = await this.#requireRepository().getByCreator(address);
     const funding = await this.#getFirstFunding(address);
     return {
@@ -143,11 +145,15 @@ export class AerodromeAnalyzer {
   async getFirstTrades(poolAddress: string): Promise<Trade[]> {
     const launch = this.provider
       ? await this.#requireRepository().getByPoolAddress(poolAddress)
-      : demoLaunches.find((item) => item.poolAddress.toLowerCase() === poolAddress.toLowerCase());
+      : this.#demoLaunches().find((item) => item.poolAddress.toLowerCase() === poolAddress.toLowerCase());
     if (!launch) throw new Error("Launch not found");
     if (!this.provider) return buildDemoTrades(launch);
     if (this.etherscan) return this.#getTradesFromEtherscan(launch);
     return this.#getTradesFromRpc(launch);
+  }
+
+  #demoLaunches(): Launch[] {
+    return demoLaunches.filter((launch) => launch.dex === this.adapter.id);
   }
 
   // Preferred path: pull the first 100 swap transactions straight from BaseScan
@@ -156,7 +162,7 @@ export class AerodromeAnalyzer {
     const quote = await this.#resolveTradeQuote(launch);
     const logs = await this.etherscan!.getLogs({
       address: launch.poolAddress,
-      topic0: this.poolInterface.getEvent("Swap")!.topicHash,
+      topic0: this.adapter.poolInterface.getEvent(this.adapter.swapEventName)!.topicHash,
       fromBlock: launch.blockNumber,
       toBlock: 99_999_999,
       offset: 100,
@@ -179,7 +185,7 @@ export class AerodromeAnalyzer {
     const logs = await this.#getLogsInChunks(
       {
         address: launch.poolAddress,
-        topics: [this.poolInterface.getEvent("Swap")!.topicHash],
+        topics: [this.adapter.poolInterface.getEvent(this.adapter.swapEventName)!.topicHash],
         fromBlock: launch.blockNumber,
         toBlock: latestBlock
       },
@@ -206,7 +212,7 @@ export class AerodromeAnalyzer {
     let quoteIsToken0: boolean;
     let quoteDecimals: number;
 
-    const known = quoteAddress ? getQuoteToken(quoteAddress) : undefined;
+    const known = quoteAddress ? getQuoteToken(this.adapter.quotes, quoteAddress) : undefined;
     if (quoteAddress && known) {
       quoteDecimals = known.decimals;
       quoteIsToken0 = isQuoteToken0(quoteAddress, launch.tokenAddress);
@@ -226,16 +232,14 @@ export class AerodromeAnalyzer {
   }
 
   #buildTrade(input: { topics: string[]; data: string; txHash: string; logIndex: number; timestampMs: number; rank: number; quote: TradeQuote }): Trade {
-    const event = this.poolInterface.parseLog({ topics: input.topics, data: input.data })!;
-    const quoteIn = input.quote.quoteIsToken0 ? event.args.amount0In : event.args.amount1In;
-    const quoteOut = input.quote.quoteIsToken0 ? event.args.amount0Out : event.args.amount1Out;
-    const quoteAmount = formatUnits(quoteIn > 0n ? quoteIn : quoteOut, input.quote.quoteDecimals);
+    const parsed = this.adapter.parseSwap({ topics: input.topics, data: input.data, quoteIsToken0: input.quote.quoteIsToken0 });
+    const quoteAmount = parsed ? formatUnits(parsed.quoteAmountRaw, input.quote.quoteDecimals) : "0";
     return {
       id: `${input.txHash}-${input.logIndex}`,
       rank: input.rank,
-      side: quoteIn > 0n ? "buy" : "sell",
-      trader: event.args.to,
-      amountUsd: input.quote.quotePriceUsd != null ? Number(quoteAmount) * input.quote.quotePriceUsd : null,
+      side: parsed?.side ?? "buy",
+      trader: parsed?.trader ?? "unknown",
+      amountUsd: parsed && input.quote.quotePriceUsd != null ? Number(quoteAmount) * input.quote.quotePriceUsd : null,
       quoteAmount,
       tokenAmount: null,
       timestamp: new Date(input.timestampMs).toISOString(),
@@ -244,13 +248,11 @@ export class AerodromeAnalyzer {
   }
 
   async #toLaunch(log: Log): Promise<Launch | null> {
-    const event = this.factoryInterface.parseLog(log)!;
+    const parsed = this.adapter.parseLaunchLog(log);
     const transaction = await this.provider!.getTransaction(log.transactionHash);
     const block = await this.#getBlock(log.blockNumber);
-    const token0 = event.args.token0.toLowerCase();
-    const token1 = event.args.token1.toLowerCase();
 
-    const { tokenAddress, quoteAddress } = await this.#resolveTokenSide(token0, token1);
+    const { tokenAddress, quoteAddress } = await this.#resolveTokenSide(parsed.token0, parsed.token1);
     const creation = await this.#getTokenCreation(tokenAddress);
     const [tokenSymbol, quoteSymbol] = await Promise.all([
       this.#getTokenSymbol(tokenAddress),
@@ -263,8 +265,9 @@ export class AerodromeAnalyzer {
       : null;
 
     return {
-      id: event.args.pool,
-      poolAddress: event.args.pool,
+      id: parsed.poolAddress,
+      dex: this.adapter.id,
+      poolAddress: parsed.poolAddress,
       tokenAddress,
       tokenSymbol,
       tokenCreatedAt,
@@ -276,7 +279,8 @@ export class AerodromeAnalyzer {
       creator: transaction?.from ?? "unknown",
       createdAt: new Date(Number(block!.timestamp) * 1000).toISOString(),
       blockNumber: log.blockNumber,
-      stable: event.args.stable,
+      poolType: parsed.poolType,
+      poolTypeLabel: parsed.poolTypeLabel,
       liquidityUsd: null,
       volumeUsd: null,
       firstTrades: null,
@@ -287,8 +291,8 @@ export class AerodromeAnalyzer {
   // The launched token is the non-quote side. For token/token pools (no known quote),
   // pick the more recently created side as the token and treat the other as the quote.
   async #resolveTokenSide(token0: string, token1: string): Promise<{ tokenAddress: string; quoteAddress: string }> {
-    const isQuote0 = isKnownQuote(token0);
-    const isQuote1 = isKnownQuote(token1);
+    const isQuote0 = isKnownQuote(this.adapter.quotes, token0);
+    const isQuote1 = isKnownQuote(this.adapter.quotes, token1);
     if (isQuote0 && !isQuote1) return { tokenAddress: token1, quoteAddress: token0 };
     if (isQuote1 && !isQuote0) return { tokenAddress: token0, quoteAddress: token1 };
 
@@ -306,9 +310,9 @@ export class AerodromeAnalyzer {
   async #getPoolMetadata(poolAddress: string): Promise<{ quoteAddress: string; quoteIsToken0: boolean; quoteDecimals: number }> {
     const cached = this.poolMetadata.get(poolAddress);
     if (cached) return cached;
-    const pool = new Contract(poolAddress, POOL_ABI, this.provider!);
+    const pool = new Contract(poolAddress, this.adapter.poolInterface, this.provider!);
     const [token0, token1] = await Promise.all([pool.token0(), pool.token1()]);
-    const quoteAddress = isKnownQuote(token0) ? token0 : token1;
+    const quoteAddress = isKnownQuote(this.adapter.quotes, token0) ? token0 : token1;
     const metadata = {
       quoteAddress,
       quoteIsToken0: token0.toLowerCase() === quoteAddress.toLowerCase(),
@@ -322,7 +326,7 @@ export class AerodromeAnalyzer {
     const key = address.toLowerCase();
     const cached = this.tokenSymbols.get(key);
     if (cached) return cached;
-    const knownSymbol = getQuoteToken(key)?.symbol;
+    const knownSymbol = getQuoteToken(this.adapter.quotes, key)?.symbol;
     if (knownSymbol) return knownSymbol;
     try {
       const symbol = await new Contract(address, TOKEN_ABI, this.provider!).symbol();
@@ -337,7 +341,7 @@ export class AerodromeAnalyzer {
     const key = address.toLowerCase();
     const cached = this.tokenDecimals.get(key);
     if (cached != null) return cached;
-    const knownDecimals = getQuoteToken(key)?.decimals;
+    const knownDecimals = getQuoteToken(this.adapter.quotes, key)?.decimals;
     if (knownDecimals != null) return knownDecimals;
     try {
       const decimals = Number(await new Contract(address, TOKEN_ABI, this.provider!).decimals());
@@ -379,7 +383,7 @@ export class AerodromeAnalyzer {
   // Successful lookups are cached in MongoDB; quote tokens never need a lookup.
   async #getTokenCreation(address: string): Promise<TokenCreation | null> {
     const key = address.toLowerCase();
-    if (isKnownQuote(key)) return null;
+    if (isKnownQuote(this.adapter.quotes, key)) return null;
 
     const cached = await this.#requireRepository().getTokenCreation(key);
     if (cached?.createdAt) return cached;
@@ -422,7 +426,7 @@ export class AerodromeAnalyzer {
   }
 
   #getDemoCreators({ cursor, limit, search, sort }: { cursor?: string; limit: number; search?: string; sort: CreatorSort }): CreatorPage {
-    let items = buildDemoCreators();
+    let items = buildDemoCreators(this.#demoLaunches());
     if (search) {
       const pattern = search.toLowerCase();
       items = items.filter((creator) => creator.address.toLowerCase().includes(pattern));

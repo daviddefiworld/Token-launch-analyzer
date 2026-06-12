@@ -1,4 +1,4 @@
-import type { AerodromeAnalyzer } from "./AerodromeAnalyzer.js";
+import type { LaunchAnalyzer } from "./LaunchAnalyzer.js";
 import type { LaunchRepository } from "./LaunchRepository.js";
 import type { MarketDataService } from "./MarketDataService.js";
 
@@ -10,7 +10,7 @@ export interface LaunchIndexerStatus {
 }
 
 interface LaunchIndexerOptions {
-  analyzer: AerodromeAnalyzer;
+  analyzer: LaunchAnalyzer;
   repository: LaunchRepository;
   marketDataService: MarketDataService;
   startBlock: number;
@@ -26,7 +26,7 @@ export class LaunchIndexer {
     error: null
   };
 
-  private readonly analyzer: AerodromeAnalyzer;
+  private readonly analyzer: LaunchAnalyzer;
   private readonly repository: LaunchRepository;
   private readonly marketDataService: MarketDataService;
   private readonly startBlock: number;

@@ -2,8 +2,7 @@ import mongoose from "mongoose";
 import type { CreatorPage, CreatorSort, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, TokenCreation } from "../types.js";
 import type { MarketData } from "./MarketDataService.js";
 
-const INDEX_STATE_ID = "aerodrome-classic-pools";
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 
 interface IndexState {
   _id: string;
@@ -14,6 +13,7 @@ interface IndexState {
 const launchSchema = new mongoose.Schema<Launch>(
   {
     id: { type: String, required: true, unique: true },
+    dex: { type: String, required: true, index: true },
     poolAddress: { type: String, required: true, unique: true },
     tokenAddress: { type: String, required: true },
     tokenSymbol: { type: String, required: true },
@@ -26,7 +26,8 @@ const launchSchema = new mongoose.Schema<Launch>(
     creator: { type: String, required: true },
     createdAt: { type: String, required: true },
     blockNumber: { type: Number, required: true, index: true },
-    stable: { type: Boolean, required: true },
+    poolType: { type: String, required: true },
+    poolTypeLabel: { type: String, required: true },
     liquidityUsd: { type: Number, default: null },
     volumeUsd: { type: Number, default: null },
     marketDataUpdatedAt: { type: String, default: null },
@@ -55,11 +56,19 @@ const tokenCreationSchema = new mongoose.Schema<TokenCreation>(
 );
 const TokenCreationModel = mongoose.models.TokenCreation || mongoose.model<TokenCreation>("TokenCreation", tokenCreationSchema);
 
+// One repository per DEX. All launch queries are scoped to the adapter's `dex` id and each
+// DEX keeps its own indexing checkpoint, so the three DEXes share collections without their
+// data leaking across the ?dex= switcher. Token-creation times are chain-global and shared.
 export class LaunchRepository {
+  constructor(private readonly dexId: string, private readonly cleanupLegacy = false) {}
+
+  private get indexStateId(): string {
+    return `${this.dexId}-pools`;
+  }
+
   async getPage({ cursor, limit, search, poolType, minLiquidityUsd, minVolumeUsd, createdWithinDays, sort }: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; createdWithinDays?: number; sort: LaunchSort }): Promise<LaunchPage> {
-    const baseFilter: Record<string, unknown> = {};
-    if (poolType === "stable") baseFilter.stable = true;
-    if (poolType === "volatile") baseFilter.stable = false;
+    const baseFilter: Record<string, unknown> = { dex: this.dexId };
+    if (poolType && poolType !== "all") baseFilter.poolType = poolType;
     if (minLiquidityUsd != null) baseFilter.liquidityUsd = { $gte: minLiquidityUsd };
     if (minVolumeUsd != null) baseFilter.volumeUsd = { $gte: minVolumeUsd };
     // UI-driven token-age filter; pools with unknown creation time are excluded when set.
@@ -89,11 +98,11 @@ export class LaunchRepository {
   }
 
   async getByCreator(creator: string): Promise<Launch[]> {
-    return LaunchModel.find({ creator }).sort({ blockNumber: -1 }).lean<Launch[]>();
+    return LaunchModel.find({ dex: this.dexId, creator }).sort({ blockNumber: -1 }).lean<Launch[]>();
   }
 
   async getCreatorsPage({ cursor, limit, search, sort }: { cursor?: string; limit: number; search?: string; sort: CreatorSort }): Promise<CreatorPage> {
-    const matchStage: Record<string, unknown> = {};
+    const matchStage: Record<string, unknown> = { dex: this.dexId };
     if (search) matchStage.creator = new RegExp(this.escapeRegExp(search), "i");
 
     const groupStage = {
@@ -115,7 +124,7 @@ export class LaunchRepository {
     };
     const sortDefinition = this.getCreatorSortDefinition(sort);
     const baseStages = [
-      ...(Object.keys(matchStage).length ? [{ $match: matchStage }] : []),
+      { $match: matchStage },
       groupStage,
       projectStage
     ];
@@ -149,7 +158,7 @@ export class LaunchRepository {
     const sinceIso = since.toISOString();
 
     const aggregated = await LaunchModel.aggregate<DailyAnalyticsPoint>([
-      { $match: { createdAt: { $gte: sinceIso } } },
+      { $match: { dex: this.dexId, createdAt: { $gte: sinceIso } } },
       {
         $group: {
           _id: { $substr: ["$createdAt", 0, 10] },
@@ -177,6 +186,7 @@ export class LaunchRepository {
     const dayAgoIso = new Date(now - 86_400_000).toISOString();
 
     const [summary] = await LaunchModel.aggregate<LaunchStats>([
+      { $match: { dex: this.dexId } },
       {
         $group: {
           _id: null,
@@ -224,29 +234,31 @@ export class LaunchRepository {
   }
 
   async getByPoolAddress(poolAddress: string): Promise<Launch | null> {
-    return LaunchModel.findOne({ poolAddress }).lean<Launch | null>();
+    return LaunchModel.findOne({ dex: this.dexId, poolAddress }).lean<Launch | null>();
   }
 
   async getIndexedBlock(defaultBlock: number): Promise<number> {
-    const state = await IndexStateModel.findById(INDEX_STATE_ID).lean<IndexState | null>();
+    const state = await IndexStateModel.findById(this.indexStateId).lean<IndexState | null>();
     return state?.indexedBlock ?? defaultBlock;
   }
 
   async prepareIndexingStart(startBlock: number): Promise<void> {
-    const state = await IndexStateModel.findById(INDEX_STATE_ID).lean<IndexState | null>();
+    const state = await IndexStateModel.findById(this.indexStateId).lean<IndexState | null>();
     if (state?.version !== INDEX_VERSION) {
-      await LaunchModel.deleteMany({});
+      await LaunchModel.deleteMany({ dex: this.dexId });
+      // The default adapter also clears pre-multi-DEX docs (saved before the `dex` field).
+      if (this.cleanupLegacy) await LaunchModel.deleteMany({ dex: { $exists: false } });
       await IndexStateModel.updateOne(
-        { _id: INDEX_STATE_ID },
+        { _id: this.indexStateId },
         { $set: { indexedBlock: startBlock - 1, version: INDEX_VERSION } },
         { upsert: true }
       );
       return;
     }
 
-    await LaunchModel.deleteMany({ blockNumber: { $lt: startBlock } });
+    await LaunchModel.deleteMany({ dex: this.dexId, blockNumber: { $lt: startBlock } });
     await IndexStateModel.updateOne(
-      { _id: INDEX_STATE_ID },
+      { _id: this.indexStateId },
       { $max: { indexedBlock: startBlock - 1 }, $set: { version: INDEX_VERSION } },
       { upsert: true }
     );
@@ -267,7 +279,7 @@ export class LaunchRepository {
 
     // Advance only after launch upserts succeed. Replaying a chunk after a crash is safe.
     await IndexStateModel.updateOne(
-      { _id: INDEX_STATE_ID },
+      { _id: this.indexStateId },
       { $set: { indexedBlock } },
       { upsert: true }
     );
@@ -276,6 +288,7 @@ export class LaunchRepository {
   async getLaunchesForMarketData(limit: number): Promise<Launch[]> {
     const staleBefore = new Date(Date.now() - 5 * 60_000).toISOString();
     return LaunchModel.find({
+      dex: this.dexId,
       $or: [
         { marketDataUpdatedAt: null },
         { marketDataUpdatedAt: { $exists: false } },

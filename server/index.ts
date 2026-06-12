@@ -1,55 +1,79 @@
 import "dotenv/config";
 import cors from "cors";
-import express, { type ErrorRequestHandler } from "express";
+import express, { type ErrorRequestHandler, type Request } from "express";
 import mongoose from "mongoose";
-import { AerodromeAnalyzer } from "./AerodromeAnalyzer.js";
+import { LaunchAnalyzer } from "./LaunchAnalyzer.js";
 import { EtherscanService } from "./EtherscanService.js";
 import { LaunchIndexer } from "./LaunchIndexer.js";
 import { LaunchRepository } from "./LaunchRepository.js";
 import { MarketDataService } from "./MarketDataService.js";
 import { PriceService } from "./PriceService.js";
-import type { CreatorSort, LaunchSort, PoolType } from "../types.js";
+import { RpcMetricsProvider } from "./RpcMetricsProvider.js";
+import { DEFAULT_DEX_ID, listAdapters } from "./skills/registry.js";
+import type { CreatorSort, DexInfo, LaunchSort } from "../types.js";
 
 const port = process.env.PORT || 4000;
 const startBlock = Number(process.env.BASE_START_BLOCK || 3200000);
 const logChunk = Math.min(Math.max(Number(process.env.BASE_LOG_CHUNK) || 2000, 1), 2000);
 const app = express();
+
+// Shared infrastructure: one RPC provider, one rate-limited Etherscan client, and one
+// price service, reused across every DEX adapter so rate limits and RPC metrics aggregate.
+const provider = process.env.BASE_RPC_URL ? new RpcMetricsProvider(process.env.BASE_RPC_URL) : null;
 const etherscan = process.env.BASESCAN_API_KEY ? new EtherscanService(process.env.BASESCAN_API_KEY) : null;
 const priceService = etherscan ? new PriceService(etherscan) : null;
-const analyzer = new AerodromeAnalyzer({
-  rpcUrl: process.env.BASE_RPC_URL,
-  etherscan,
-  priceService,
-  logChunk
-});
-let indexer: LaunchIndexer | null = null;
+
+const adapters = listAdapters();
+// One analyzer (and, in live mode, one indexer) per supported DEX. The ?dex= query param
+// selects which one a request targets, defaulting to DEFAULT_DEX_ID.
+const analyzers = new Map<string, LaunchAnalyzer>(
+  adapters.map((adapter) => [adapter.id, new LaunchAnalyzer({ adapter, provider, etherscan, priceService, logChunk })])
+);
+const indexers = new Map<string, LaunchIndexer>();
+
+const dexInfos: DexInfo[] = adapters.map((adapter) => ({
+  id: adapter.id,
+  label: adapter.label,
+  network: adapter.network,
+  factory: adapter.factoryAddress,
+  poolTypeOptions: adapter.poolTypeOptions
+}));
+
+function resolveAnalyzer(request: Request): LaunchAnalyzer {
+  const dex = typeof request.query.dex === "string" ? request.query.dex : "";
+  return analyzers.get(dex) ?? analyzers.get(DEFAULT_DEX_ID)!;
+}
 
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-app.get("/api/status", (_request, response) => {
+app.get("/api/dexes", (_request, response) => {
+  response.json(dexInfos);
+});
+
+app.get("/api/status", (request, response) => {
+  const analyzer = resolveAnalyzer(request);
   response.json({
     mode: analyzer.mode,
-    network: "Base",
-    factory: "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",
+    dex: analyzer.dexId,
+    network: analyzer.adapter.network,
+    factory: analyzer.adapter.factoryAddress,
     mongodb: mongoose.connection.readyState === 1,
-    indexer: indexer?.status
+    indexer: indexers.get(analyzer.dexId)?.status,
+    availableDexes: dexInfos
   });
 });
 
 app.get("/api/launches", async (request, response, next) => {
   try {
     const limit = Math.min(Math.max(Number(request.query.limit) || 30, 1), 100);
-    const poolType = ["all", "stable", "volatile"].includes(String(request.query.poolType))
-      ? request.query.poolType as PoolType
-      : undefined;
     const sort = ["newest", "oldest", "liquidity", "volume"].includes(String(request.query.sort))
       ? request.query.sort as LaunchSort
       : "newest";
-    response.json(await analyzer.getLaunches({
+    response.json(await resolveAnalyzer(request).getLaunches({
       cursor: typeof request.query.cursor === "string" ? request.query.cursor : undefined,
       search: typeof request.query.search === "string" ? request.query.search.trim() : undefined,
-      poolType,
+      poolType: typeof request.query.poolType === "string" ? request.query.poolType : undefined,
       minLiquidityUsd: toOptionalNumber(request.query.minLiquidityUsd),
       minVolumeUsd: toOptionalNumber(request.query.minVolumeUsd),
       createdWithinDays: toOptionalNumber(request.query.createdWithinDays),
@@ -61,12 +85,13 @@ app.get("/api/launches", async (request, response, next) => {
   }
 });
 
-app.get("/api/rpc-usage", (_request, response) => {
-  response.json(analyzer.getRpcUsage());
+app.get("/api/rpc-usage", (request, response) => {
+  response.json(resolveAnalyzer(request).getRpcUsage());
 });
 
 app.post("/api/market-data/refresh", async (request, response, next) => {
   try {
+    const indexer = indexers.get(resolveAnalyzer(request).dexId);
     if (!indexer) {
       response.status(503).json({ error: "Market data refresh requires live indexing" });
       return;
@@ -82,9 +107,9 @@ app.post("/api/market-data/refresh", async (request, response, next) => {
   }
 });
 
-app.get("/api/launches/stats", async (_request, response, next) => {
+app.get("/api/launches/stats", async (request, response, next) => {
   try {
-    response.json(await analyzer.getLaunchStats());
+    response.json(await resolveAnalyzer(request).getLaunchStats());
   } catch (error) {
     next(error);
   }
@@ -93,7 +118,7 @@ app.get("/api/launches/stats", async (_request, response, next) => {
 app.get("/api/launches/analytics/daily", async (request, response, next) => {
   try {
     const days = Math.min(Math.max(Number(request.query.days) || 30, 7), 90);
-    response.json(await analyzer.getDailyAnalytics(days));
+    response.json(await resolveAnalyzer(request).getDailyAnalytics(days));
   } catch (error) {
     next(error);
   }
@@ -105,7 +130,7 @@ app.get("/api/creators", async (request, response, next) => {
     const sort = ["launchCount", "newest", "oldest"].includes(String(request.query.sort))
       ? request.query.sort as CreatorSort
       : "launchCount";
-    response.json(await analyzer.getCreators({
+    response.json(await resolveAnalyzer(request).getCreators({
       cursor: typeof request.query.cursor === "string" ? request.query.cursor : undefined,
       search: typeof request.query.search === "string" ? request.query.search.trim() : undefined,
       sort,
@@ -118,7 +143,7 @@ app.get("/api/creators", async (request, response, next) => {
 
 app.get("/api/creators/:address", async (request, response, next) => {
   try {
-    response.json(await analyzer.getCreator(request.params.address));
+    response.json(await resolveAnalyzer(request).getCreator(request.params.address));
   } catch (error) {
     next(error);
   }
@@ -126,7 +151,7 @@ app.get("/api/creators/:address", async (request, response, next) => {
 
 app.get("/api/launches/:poolAddress/trades", async (request, response, next) => {
   try {
-    response.json(await analyzer.getFirstTrades(request.params.poolAddress));
+    response.json(await resolveAnalyzer(request).getFirstTrades(request.params.poolAddress));
   } catch (error) {
     next(error);
   }
@@ -143,21 +168,27 @@ async function start(): Promise<void> {
   if (process.env.MONGODB_URI) {
     try {
       await mongoose.connect(process.env.MONGODB_URI);
-      const repository = new LaunchRepository();
-      analyzer.repository = repository;
-      if (analyzer.mode === "live") {
-        indexer = new LaunchIndexer({ analyzer, repository, marketDataService: new MarketDataService(etherscan, priceService, analyzer.provider), startBlock, blockChunk: logChunk });
+      for (const adapter of adapters) {
+        const analyzer = analyzers.get(adapter.id)!;
+        // The default adapter also clears any pre-multi-DEX cached launches on first run.
+        const repository = new LaunchRepository(adapter.id, adapter.id === DEFAULT_DEX_ID);
+        analyzer.repository = repository;
+        if (analyzer.mode === "live") {
+          const marketDataService = new MarketDataService(adapter, etherscan, priceService, analyzer.provider);
+          indexers.set(adapter.id, new LaunchIndexer({ analyzer, repository, marketDataService, startBlock, blockChunk: logChunk }));
+        }
       }
     } catch (error) {
       console.error("MongoDB connection failed:", error);
     }
-  } else if (analyzer.mode === "live") {
+  } else if (provider) {
     console.warn("MONGODB_URI is required to index and cache live launch data.");
   }
 
   app.listen(port, () => {
-    console.log(`Aerodrome analyzer API listening on http://localhost:${port} (${analyzer.mode} mode)`);
-    indexer?.start();
+    const mode = provider ? "live" : "demo";
+    console.log(`Launch analyzer API listening on http://localhost:${port} (${mode} mode) — DEXes: ${adapters.map((adapter) => adapter.id).join(", ")}`);
+    for (const indexer of indexers.values()) indexer.start();
   });
 }
 

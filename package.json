@@ -1,5 +1,5 @@
 {
-  "name": "aerodrome-launch-intel",
+  "name": "launch-intel",
   "private": true,
   "type": "module",
   "scripts": {

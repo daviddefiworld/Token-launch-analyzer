@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
-import type { ApiStatus, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
+import type { ApiStatus, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/$/, "");
 
@@ -44,7 +44,16 @@ const fetchJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   return response.json();
 };
 
+// Every API request targets a single DEX via ?dex=. This appends it, picking the right
+// separator for paths that already carry a query string.
+const withDex = (path: string, dex: string) =>
+  `${path}${path.includes("?") ? "&" : "?"}dex=${encodeURIComponent(dex)}`;
+
+const DEFAULT_DEX = "aerodrome";
+
 function App() {
+  const [dex, setDex] = useState<string>(DEFAULT_DEX);
+  const [availableDexes, setAvailableDexes] = useState<DexInfo[]>([]);
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [launches, setLaunches] = useState<Launch[]>([]);
   const [selected, setSelected] = useState<Launch | null>(null);
@@ -69,12 +78,18 @@ function App() {
   const scrollSentinel = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const loadStatus = () => fetchJson<ApiStatus>("/api/status")
+    fetchJson<DexInfo[]>("/api/dexes")
+      .then((dexes) => { if (dexes.length) setAvailableDexes(dexes); })
+      .catch((requestError: Error) => setError(requestError.message));
+  }, []);
+
+  useEffect(() => {
+    const loadStatus = () => fetchJson<ApiStatus>(withDex("/api/status", dex))
       .then(setStatus)
       .catch((requestError: Error) => setError(requestError.message));
     void loadStatus();
     const statusTimer = setInterval(() => void loadStatus(), 5_000);
-    const loadStats = () => fetchJson<LaunchStats>("/api/launches/stats")
+    const loadStats = () => fetchJson<LaunchStats>(withDex("/api/launches/stats", dex))
       .then(setLaunchStats)
       .catch((requestError: Error) => setError(requestError.message));
     void loadStats();
@@ -84,11 +99,11 @@ function App() {
       clearInterval(statusTimer);
       clearInterval(statsTimer);
     };
-  }, []);
+  }, [dex]);
 
   const loadLaunches = useCallback(async (cursor?: string) => {
     cursor ? setLoadingMore(true) : setLoading(true);
-    const params = new URLSearchParams({ limit: "30" });
+    const params = new URLSearchParams({ limit: "30", dex });
     if (cursor) params.set("cursor", cursor);
     if (search.trim()) params.set("search", search.trim());
     if (poolType !== "all") params.set("poolType", poolType);
@@ -113,18 +128,18 @@ function App() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [createdWithinDays, minLiquidityUsd, minVolumeUsd, poolType, search, sort]);
+  }, [createdWithinDays, dex, minLiquidityUsd, minVolumeUsd, poolType, search, sort]);
 
   const refreshMarketData = useCallback(async () => {
     if (refreshingMarket || status?.mode !== "live") return;
     setRefreshingMarket(true);
     setError("");
     try {
-      await fetchJson<{ started: boolean }>("/api/market-data/refresh?limit=50", { method: "POST" });
+      await fetchJson<{ started: boolean }>(withDex("/api/market-data/refresh?limit=50", dex), { method: "POST" });
       // The server refreshes in the background; poll stats for progressive updates.
       for (let attempt = 0; attempt < 4; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
-        setLaunchStats(await fetchJson<LaunchStats>("/api/launches/stats"));
+        setLaunchStats(await fetchJson<LaunchStats>(withDex("/api/launches/stats", dex)));
       }
       setLaunches([]);
       setNextCursor(null);
@@ -134,17 +149,25 @@ function App() {
     } finally {
       setRefreshingMarket(false);
     }
-  }, [loadLaunches, refreshingMarket, status?.mode]);
+  }, [dex, loadLaunches, refreshingMarket, status?.mode]);
 
   useEffect(() => {
     if (page !== "rpc") return;
-    const loadUsage = () => fetchJson<RpcUsage>("/api/rpc-usage")
+    const loadUsage = () => fetchJson<RpcUsage>(withDex("/api/rpc-usage", dex))
       .then(setRpcUsage)
       .catch((requestError: Error) => setError(requestError.message));
     void loadUsage();
     const timer = setInterval(() => void loadUsage(), 3_000);
     return () => clearInterval(timer);
-  }, [page]);
+  }, [dex, page]);
+
+  // The pool-type taxonomy differs per DEX, so reset the filter when switching DEX, and
+  // clear any stale error so a previous DEX's failure doesn't leak into the new context.
+  useEffect(() => {
+    setPoolType("all");
+    setSelected(null);
+    setError("");
+  }, [dex]);
 
   useEffect(() => {
     setLaunches([]);
@@ -164,33 +187,47 @@ function App() {
   }, [loadLaunches, loadingMore, nextCursor]);
 
   useEffect(() => {
-    if (!selected) return;
+    // On a DEX switch, `dex` updates before `selected` is reset, leaving a launch from the
+    // old DEX paired with the new dex. Skip the fetch in that mismatched render — the
+    // pool wouldn't exist under the new (dex-scoped) DEX and would 404 spuriously.
+    if (!selected || selected.dex !== dex) return;
     setCreator(null);
     setTrades([]);
     Promise.all([
-      fetchJson<CreatorProfile>(`/api/creators/${selected.creator}`),
-      fetchJson<Trade[]>(`/api/launches/${selected.poolAddress}/trades`)
+      fetchJson<CreatorProfile>(withDex(`/api/creators/${selected.creator}`, dex)),
+      fetchJson<Trade[]>(withDex(`/api/launches/${selected.poolAddress}/trades`, dex))
     ])
       .then(([nextCreator, nextTrades]) => {
         setCreator(nextCreator);
         setTrades(nextTrades);
       })
       .catch((requestError: Error) => setError(requestError.message));
-  }, [selected]);
+  }, [dex, selected]);
 
   const filteredTrades = trades.filter((trade) => tradeFilter === "all" || trade.side === tradeFilter);
   const buyCount = trades.filter((trade) => trade.side === "buy").length;
   const sellCount = trades.length - buyCount;
+  const currentDex = availableDexes.find((item) => item.id === dex);
+  const dexLabel = currentDex?.label ?? "DEX";
+  const poolTypeOptions = currentDex?.poolTypeOptions ?? [];
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">A</div>
+          <div className="brand-mark">{dexLabel.slice(0, 1)}</div>
           <div>
-            <strong>Aero Intel</strong>
-            <span>Launch analyzer</span>
+            <strong>Launch Intel</strong>
+            <span>Multi-DEX analyzer</span>
           </div>
         </div>
+        <label className="dex-switcher">
+          <span className="eyebrow">DEX</span>
+          <select className="select-control" value={dex} onChange={(event) => setDex(event.target.value)}>
+            {(availableDexes.length ? availableDexes : [{ id: dex, label: dexLabel, network: "Base", factory: "", poolTypeOptions: [] }]).map((item) => (
+              <option key={item.id} value={item.id}>{item.label}</option>
+            ))}
+          </select>
+        </label>
         <nav>
           <button onClick={() => setPage("overview")} className={`nav-item ${page === "overview" ? "active" : ""}`}><GridIcon /> Overview</button>
           <button onClick={() => setPage("creators")} className={`nav-item ${page === "creators" ? "active" : ""}`}><UsersIcon /> Creators</button>
@@ -210,15 +247,15 @@ function App() {
               </small>
             )}
           </div>
-          <span className="version">Aerodrome classic pools</span>
+          <span className="version">{dexLabel} · {currentDex?.network ?? "Base"}</span>
         </div>
       </aside>
 
       <section className="workspace">
-        {page === "rpc" ? <RpcUsagePage usage={rpcUsage} /> : page === "creators" ? <CreatorsPage onError={setError} /> : page === "analytics" ? <AnalyticsPage onError={setError} /> : <>
+        {page === "rpc" ? <RpcUsagePage usage={rpcUsage} /> : page === "creators" ? <CreatorsPage dex={dex} onError={setError} /> : page === "analytics" ? <AnalyticsPage dex={dex} onError={setError} /> : <>
         <header className="topbar">
           <div>
-            <span className="eyebrow">Aerodrome DEX</span>
+            <span className="eyebrow">{dexLabel} · {currentDex?.network ?? "Base"}</span>
             <h1>Launch intelligence</h1>
           </div>
           <div className="topbar-actions">
@@ -258,9 +295,12 @@ function App() {
             </div>
             <div className="toolbar">
               <label className="search-box"><SearchIcon /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search token, wallet, pool" /></label>
-              <select className="select-control" value={poolType} onChange={(event) => setPoolType(event.target.value as PoolType)}>
-                <option value="all">All pools</option><option value="volatile">Volatile</option><option value="stable">Stable</option>
-              </select>
+              {poolTypeOptions.length > 0 && (
+                <select className="select-control" value={poolType} onChange={(event) => setPoolType(event.target.value as PoolType)}>
+                  <option value="all">All pools</option>
+                  {poolTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              )}
               <select className="select-control" value={sort} onChange={(event) => setSort(event.target.value as LaunchSort)}>
                 <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="liquidity">Liquidity</option><option value="volume">24h volume</option>
               </select>
@@ -300,7 +340,7 @@ function App() {
                     <div><span className="eyebrow">Selected pool</span><h2>{selected.pair}</h2><small className="mono">{short(selected.poolAddress, 7)}</small></div>
                   </div>
                   <div className="pool-stats">
-                    <div><span>Pool type</span><strong>{selected.stable ? "Stable" : "Volatile"}</strong></div>
+                    <div><span>Pool type</span><strong>{selected.poolTypeLabel}</strong></div>
                     <div><span>Created</span><strong>{formatDate(selected.createdAt)}</strong></div>
                     <div><span>Block</span><strong>{selected.blockNumber.toLocaleString()}</strong></div>
                     <div><span>Token created</span><strong>{formatDate(selected.tokenCreatedAt)}</strong></div>
@@ -360,7 +400,7 @@ function App() {
   );
 }
 
-function CreatorsPage({ onError }: { onError: (message: string) => void }) {
+function CreatorsPage({ dex, onError }: { dex: string; onError: (message: string) => void }) {
   const [creators, setCreators] = useState<CreatorSummary[]>([]);
   const [selected, setSelected] = useState<CreatorSummary | null>(null);
   const [profile, setProfile] = useState<CreatorProfile | null>(null);
@@ -374,7 +414,7 @@ function CreatorsPage({ onError }: { onError: (message: string) => void }) {
 
   const loadCreators = useCallback(async (cursor?: string) => {
     cursor ? setLoadingMore(true) : setLoading(true);
-    const params = new URLSearchParams({ limit: "30", sort });
+    const params = new URLSearchParams({ limit: "30", sort, dex });
     if (cursor) params.set("cursor", cursor);
     if (search.trim()) params.set("search", search.trim());
 
@@ -390,7 +430,7 @@ function CreatorsPage({ onError }: { onError: (message: string) => void }) {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [onError, search, sort]);
+  }, [dex, onError, search, sort]);
 
   useEffect(() => {
     setCreators([]);
@@ -415,10 +455,10 @@ function CreatorsPage({ onError }: { onError: (message: string) => void }) {
       return;
     }
     setProfile(null);
-    fetchJson<CreatorProfile>(`/api/creators/${selected.address}`)
+    fetchJson<CreatorProfile>(withDex(`/api/creators/${selected.address}`, dex))
       .then(setProfile)
       .catch((requestError: Error) => onError(requestError.message));
-  }, [onError, selected]);
+  }, [dex, onError, selected]);
 
   const totalLaunches = creators.reduce((sum, creator) => sum + creator.launchCount, 0);
   const repeatCreators = creators.filter((creator) => creator.launchCount > 1).length;
@@ -551,18 +591,18 @@ function CreatorProfilePanel({
   );
 }
 
-function AnalyticsPage({ onError }: { onError: (message: string) => void }) {
+function AnalyticsPage({ dex, onError }: { dex: string; onError: (message: string) => void }) {
   const [analytics, setAnalytics] = useState<LaunchDailyAnalytics | null>(null);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
-    fetchJson<LaunchDailyAnalytics>(`/api/launches/analytics/daily?days=${days}`)
+    fetchJson<LaunchDailyAnalytics>(withDex(`/api/launches/analytics/daily?days=${days}`, dex))
       .then(setAnalytics)
       .catch((requestError: Error) => onError(requestError.message))
       .finally(() => setLoading(false));
-  }, [days, onError]);
+  }, [days, dex, onError]);
 
   const points = analytics?.points ?? [];
   const totalLaunches = points.reduce((sum, point) => sum + point.launchCount, 0);
