@@ -68,6 +68,28 @@ export interface AttendeeCluster {
   volumeUsd: number | null;
 }
 
+// Funding-relationship graph for visualization: wallets are nodes, each edge points from a
+// wallet to the wallet that first funded it. "funder" nodes are wallets that appear only as
+// funders (not themselves traders).
+export type AttendeeNodeRole = "creator" | "insider" | "external" | "coordinated" | "funder";
+
+export interface AttendeeGraphNode {
+  address: string;
+  role: AttendeeNodeRole;
+  clusterId: number | null;
+  volumeUsd: number | null;
+}
+
+export interface AttendeeGraphEdge {
+  from: string;
+  to: string;
+}
+
+export interface AttendeeGraph {
+  nodes: AttendeeGraphNode[];
+  edges: AttendeeGraphEdge[];
+}
+
 export interface AttendeeReport {
   poolAddress: string;
   dex: string;
@@ -85,6 +107,7 @@ export interface AttendeeReport {
   insiderRatio: number | null;
   buyers: AttendeeBuyer[];
   clusters: AttendeeCluster[];
+  graph?: AttendeeGraph;
   updatedAt: string | null;
 }
 

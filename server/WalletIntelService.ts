@@ -1,5 +1,5 @@
 import { formatEther } from "ethers";
-import type { AttendeeClass } from "../types.js";
+import type { AttendeeClass, AttendeeNodeRole } from "../types.js";
 import type { EtherscanService } from "./EtherscanService.js";
 import type { LaunchRepository } from "./LaunchRepository.js";
 
@@ -39,10 +39,22 @@ export interface IntelCluster {
   quoteRaw: bigint;
 }
 
+export interface IntelGraphNode {
+  address: string;
+  role: AttendeeNodeRole;
+  clusterId: number | null;
+}
+
+export interface IntelGraph {
+  nodes: IntelGraphNode[];
+  edges: { from: string; to: string }[];
+}
+
 export interface IntelResult {
   creatorFundingSource: string | null;
   buyers: ClassifiedBuyer[];
   clusters: IntelCluster[];
+  graph: IntelGraph;
   insiderQuoteRaw: bigint;
   totalQuoteRaw: bigint;
   insiderBuyerCount: number;
@@ -56,6 +68,8 @@ export interface IntelResult {
 const PUBLIC_FUNDER_THRESHOLD = 75;
 // External buyers sharing one private funder with each other form a "coordinated" ring.
 const MIN_COORDINATED_CLUSTER = 3;
+// Cap the wallet graph to the top traders (by volume) plus their funders, for readability.
+const GRAPH_MAX_TRADERS = 60;
 // Known public funders on Base whose shared use is meaningless as a sybil signal. The
 // out-degree heuristic catches the rest as the cache grows; extend this seed as needed.
 const SEED_PUBLIC_FUNDERS = new Set<string>([
@@ -159,7 +173,52 @@ export class WalletIntelService {
     });
 
     const clusters = this.buildClusters(classified, creatorFundingSource, isPublic);
-    return { creatorFundingSource, buyers: classified, clusters, insiderQuoteRaw, totalQuoteRaw, insiderBuyerCount, externalBuyerCount, complete };
+    const graph = this.buildGraph(classified, funding, creatorKey, creatorRoot, dsu, isPublic);
+    return { creatorFundingSource, buyers: classified, clusters, graph, insiderQuoteRaw, totalQuoteRaw, insiderBuyerCount, externalBuyerCount, complete };
+  }
+
+  // Build a funding-relationship graph: the top traders, the creator, and up to two hops of
+  // their private funders, with an edge from each wallet to the wallet that funded it.
+  private buildGraph(
+    buyers: ClassifiedBuyer[],
+    funding: Map<string, WalletFunding>,
+    creatorKey: string,
+    creatorRoot: string,
+    dsu: DisjointSet,
+    isPublic: (funder: string) => boolean
+  ): IntelGraph {
+    const funderOf = (address: string): string | null => {
+      const funder = funding.get(address)?.fundingSource;
+      return funder && !isPublic(funder) ? funder : null;
+    };
+
+    const included = new Set<string>([creatorKey, ...buyers.slice(0, GRAPH_MAX_TRADERS).map((buyer) => buyer.address)]);
+    for (let hop = 0; hop < 2; hop++) {
+      for (const address of [...included]) {
+        const funder = funderOf(address);
+        if (funder) included.add(funder);
+      }
+    }
+
+    const edges: { from: string; to: string }[] = [];
+    for (const address of included) {
+      const funder = funderOf(address);
+      if (funder && included.has(funder)) edges.push({ from: address, to: funder });
+    }
+
+    const byAddress = new Map(buyers.map((buyer) => [buyer.address, buyer]));
+    const nodes: IntelGraphNode[] = [...included].map((address) => {
+      if (address === creatorKey) return { address, role: "creator", clusterId: 0 };
+      const buyer = byAddress.get(address);
+      if (buyer) {
+        const role: AttendeeNodeRole = buyer.classification === "external" ? (buyer.clusterId != null ? "coordinated" : "external") : "insider";
+        return { address, role, clusterId: buyer.clusterId };
+      }
+      // Funder-only node: red if it sits inside the creator's cluster, neutral otherwise.
+      return { address, role: dsu.find(address) === creatorRoot ? "insider" : "funder", clusterId: null };
+    });
+
+    return { nodes, edges };
   }
 
   private classifyOne(

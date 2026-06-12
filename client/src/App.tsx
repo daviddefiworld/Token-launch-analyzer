@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
-import type { ApiStatus, AttendeeBuyer, AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
+import { useCallback, useEffect, useMemo, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
+import type { ApiStatus, AttendeeBuyer, AttendeeGraph, AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/$/, "");
 
@@ -367,9 +367,14 @@ function App() {
                   <span className="mono">{short(launch.creator)}</span>
                   <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
                   <span className="vol-cell">
-                    {formatLaunchUsd(launch.externalVolumeUsd ?? launch.volumeUsd, launch.marketDataUpdatedAt)}
-                    {launch.insiderRatio != null && launch.insiderRatio >= 0.05 && (
-                      <small className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}>{Math.round(launch.insiderRatio * 100)}% insider</small>
+                    <strong>{formatLaunchUsd(launch.externalVolumeUsd ?? launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
+                    {launch.externalVolumeUsd != null && (
+                      <small className="vol-sub">
+                        of {formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)} total
+                        {launch.insiderRatio != null && launch.insiderRatio >= 0.05 && (
+                          <b className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}> · {Math.round(launch.insiderRatio * 100)}% insider</b>
+                        )}
+                      </small>
                     )}
                   </span>
                 </button>
@@ -646,6 +651,116 @@ function CreatorProfilePanel({
   );
 }
 
+const ROLE_COLORS: Record<string, string> = {
+  creator: "#ff5f6d",
+  insider: "#ff9b9b",
+  coordinated: "#f4c07a",
+  external: "#7ff0aa",
+  funder: "#8aa0bd"
+};
+
+// A small deterministic force-directed layout (circle init, no randomness) for the wallet
+// funding graph: repulsion between all nodes, spring attraction along funding edges, light
+// gravity to center; then normalize into the viewBox.
+function computeGraphLayout(graph: AttendeeGraph, width: number, height: number) {
+  const count = graph.nodes.length;
+  const nodes = graph.nodes.map((node, index) => {
+    const angle = (2 * Math.PI * index) / Math.max(1, count);
+    return { ...node, x: Math.cos(angle) * 140, y: Math.sin(angle) * 140, vx: 0, vy: 0 };
+  });
+  const indexByAddress = new Map(nodes.map((node, index) => [node.address, index]));
+  const edges = graph.edges
+    .map((edge) => [indexByAddress.get(edge.from), indexByAddress.get(edge.to)] as [number | undefined, number | undefined])
+    .filter((pair): pair is [number, number] => pair[0] != null && pair[1] != null);
+
+  for (let iteration = 0; iteration < 220; iteration++) {
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const dist2 = dx * dx + dy * dy + 0.01;
+        const dist = Math.sqrt(dist2);
+        const force = 1400 / dist2;
+        const fx = (force * dx) / dist;
+        const fy = (force * dy) / dist;
+        nodes[i].vx += fx; nodes[i].vy += fy;
+        nodes[j].vx -= fx; nodes[j].vy -= fy;
+      }
+    }
+    for (const [a, b] of edges) {
+      const dx = nodes[b].x - nodes[a].x;
+      const dy = nodes[b].y - nodes[a].y;
+      const dist = Math.sqrt(dx * dx + dy * dy) + 0.01;
+      const force = (dist - 50) * 0.06;
+      const fx = (force * dx) / dist;
+      const fy = (force * dy) / dist;
+      nodes[a].vx += fx; nodes[a].vy += fy;
+      nodes[b].vx -= fx; nodes[b].vy -= fy;
+    }
+    for (const node of nodes) {
+      node.vx -= node.x * 0.003;
+      node.vy -= node.y * 0.003;
+      node.x += Math.max(-10, Math.min(10, node.vx));
+      node.y += Math.max(-10, Math.min(10, node.vy));
+      node.vx *= 0.82; node.vy *= 0.82;
+    }
+  }
+
+  const xs = nodes.map((node) => node.x);
+  const ys = nodes.map((node) => node.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const pad = 30;
+  const scale = Math.min((width - pad * 2) / Math.max(1, maxX - minX), (height - pad * 2) / Math.max(1, maxY - minY));
+  const maxVol = Math.max(1, ...nodes.map((node) => node.volumeUsd ?? 0));
+
+  const laidOut = nodes.map((node) => ({
+    address: node.address,
+    role: node.role,
+    volumeUsd: node.volumeUsd,
+    x: pad + (node.x - minX) * scale,
+    y: pad + (node.y - minY) * scale,
+    r: node.role === "funder" ? 5 : 5 + Math.sqrt((node.volumeUsd ?? 0) / maxVol) * 10
+  }));
+  const layoutEdges = edges.map(([a, b]) => ({ x1: laidOut[a].x, y1: laidOut[a].y, x2: laidOut[b].x, y2: laidOut[b].y }));
+  return { nodes: laidOut, edges: layoutEdges };
+}
+
+function WalletGraph({ graph }: { graph: AttendeeGraph }) {
+  const width = 660;
+  const height = 380;
+  const layout = useMemo(() => computeGraphLayout(graph, width, height), [graph]);
+
+  return (
+    <div className="wallet-graph">
+      <svg viewBox={`0 0 ${width} ${height}`} className="wallet-graph-svg" role="img" aria-label="Wallet funding relationships">
+        {layout.edges.map((edge, index) => (
+          <line key={index} x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} className="graph-edge" />
+        ))}
+        {layout.nodes.map((node) => (
+          <g key={node.address}>
+            <title>{`${node.address}\n${node.role}${node.volumeUsd != null ? ` · ${formatUsd(node.volumeUsd)}` : ""}`}</title>
+            <circle
+              cx={node.x}
+              cy={node.y}
+              r={node.r}
+              fill={ROLE_COLORS[node.role] ?? "#8aa0bd"}
+              stroke={node.role === "creator" ? "#fff" : "rgba(0,0,0,.35)"}
+              strokeWidth={node.role === "creator" ? 2.5 : 1}
+            />
+          </g>
+        ))}
+      </svg>
+      <div className="graph-legend">
+        <span><i style={{ background: ROLE_COLORS.creator }} /> Creator</span>
+        <span><i style={{ background: ROLE_COLORS.insider }} /> Insider</span>
+        <span><i style={{ background: ROLE_COLORS.coordinated }} /> Sniper ring</span>
+        <span><i style={{ background: ROLE_COLORS.external }} /> External</span>
+        <span><i style={{ background: ROLE_COLORS.funder }} /> Funder</span>
+      </div>
+    </div>
+  );
+}
+
 function AttendeeIntelPanel({
   report,
   loading,
@@ -690,9 +805,9 @@ function AttendeeIntelPanel({
         <>
           <section className="metrics attendee-metrics">
             <Metric label="Real volume" value={report.externalVolumeUsd != null ? formatUsd(report.externalVolumeUsd) : "—"} hint="External, non-insider" icon={<ChartIcon />} />
+            <Metric label="Total volume" value={report.totalVolumeUsd != null ? formatUsd(report.totalVolumeUsd) : "—"} hint="All buyers, on-chain" icon={<BarChartIcon />} />
             <Metric label="Insider volume" value={report.insiderVolumeUsd != null ? formatUsd(report.insiderVolumeUsd) : "—"} hint={insiderPct != null ? `${insiderPct}% of total` : "Self-buys / sybils"} icon={<ShieldIcon />} danger={insiderPct != null && insiderPct >= 30} />
-            <Metric label="External buyers" value={report.externalBuyerCount} hint="Independent funding" icon={<UsersIcon />} />
-            <Metric label="Insider buyers" value={report.insiderBuyerCount} hint="Creator's cluster" icon={<WalletIcon />} />
+            <Metric label="Buyers" value={report.buyerCount} hint={`${report.externalBuyerCount} external · ${report.insiderBuyerCount} insider`} icon={<UsersIcon />} />
           </section>
 
           {insiderPct != null && (
@@ -711,6 +826,16 @@ function AttendeeIntelPanel({
                   {cluster.fundingSource && <small className="mono">funder {short(cluster.fundingSource, 5)}</small>}
                 </div>
               ))}
+            </div>
+          )}
+
+          {report.graph && report.graph.nodes.length > 1 && (
+            <div className="graph-section">
+              <div className="graph-heading">
+                <span className="eyebrow">Wallet relationships</span>
+                <span className="muted">{report.graph.nodes.length} wallets · {report.graph.edges.length} funding links</span>
+              </div>
+              <WalletGraph graph={report.graph} />
             </div>
           )}
 

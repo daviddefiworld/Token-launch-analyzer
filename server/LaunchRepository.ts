@@ -99,6 +99,7 @@ const attendeeReportSchema = new mongoose.Schema(
     insiderRatio: { type: Number, default: null },
     buyers: { type: [mongoose.Schema.Types.Mixed], default: [] },
     clusters: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    graph: { type: mongoose.Schema.Types.Mixed, default: null },
     updatedAt: { type: String, default: null }
   },
   { versionKey: false }

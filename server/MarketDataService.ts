@@ -224,6 +224,15 @@ export class MarketDataService {
       volumeUsd: toUsd(cluster.quoteRaw)
     }));
 
+    const quoteByAddress = new Map(result.buyers.map((buyer) => [buyer.address, buyer.quoteRaw]));
+    const graph = {
+      nodes: result.graph.nodes.map((node) => ({
+        ...node,
+        volumeUsd: quoteByAddress.has(node.address) ? toUsd(quoteByAddress.get(node.address)!) : null
+      })),
+      edges: result.graph.edges
+    };
+
     const report: AttendeeReport = {
       poolAddress: launch.poolAddress,
       dex: launch.dex,
@@ -241,6 +250,7 @@ export class MarketDataService {
       insiderRatio,
       buyers,
       clusters,
+      graph,
       updatedAt: now
     };
     const intel: Partial<Launch> = {

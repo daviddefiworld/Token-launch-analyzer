@@ -1,4 +1,4 @@
-import type { AttendeeBuyer, AttendeeClass, AttendeeCluster, AttendeeReport, CreatorProfile, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, Trade } from "../types.js";
+import type { AttendeeBuyer, AttendeeClass, AttendeeCluster, AttendeeGraphEdge, AttendeeGraphNode, AttendeeNodeRole, AttendeeReport, CreatorProfile, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, Trade } from "../types.js";
 
 export const demoLaunches: Launch[] = [
   {
@@ -311,6 +311,27 @@ export const buildDemoAttendeeReport = (launch: Launch): AttendeeReport => {
     ? [{ id: 0, kind: "creator-insider", fundingSource: creatorFundingSource, memberCount: insiderBuyers.length, volumeUsd: insiderVolumeUsd }]
     : [];
 
+  const nodes: AttendeeGraphNode[] = [
+    { address: launch.creator, role: "creator", clusterId: 0, volumeUsd: null },
+    { address: creatorFundingSource, role: "insider", clusterId: 0, volumeUsd: null }
+  ];
+  const edges: AttendeeGraphEdge[] = [{ from: launch.creator, to: creatorFundingSource }];
+  for (const buyer of buyers) {
+    const role: AttendeeNodeRole = buyer.classification === "external" ? "external" : "insider";
+    nodes.push({ address: buyer.address, role, clusterId: buyer.clusterId, volumeUsd: buyer.volumeUsd });
+    const funder = buyer.classification === "creator-funded"
+      ? launch.creator
+      : buyer.classification === "external"
+        ? buyer.fundingSource
+        : creatorFundingSource;
+    if (funder) {
+      if (buyer.classification === "external" && !nodes.some((node) => node.address === funder)) {
+        nodes.push({ address: funder, role: "funder", clusterId: null, volumeUsd: null });
+      }
+      edges.push({ from: buyer.address, to: funder });
+    }
+  }
+
   return {
     poolAddress: launch.poolAddress,
     dex: launch.dex,
@@ -328,6 +349,7 @@ export const buildDemoAttendeeReport = (launch: Launch): AttendeeReport => {
     insiderRatio: totalVolumeUsd > 0 ? insiderVolumeUsd / totalVolumeUsd : 0,
     buyers,
     clusters,
+    graph: { nodes, edges },
     updatedAt: launch.createdAt
   };
 };
