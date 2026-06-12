@@ -1,10 +1,11 @@
 import { Contract, formatEther, formatUnits, type Block, type Filter, type Log } from "ethers";
-import { buildDemoCreator, buildDemoCreators, buildDemoDailyAnalytics, buildDemoTrades, demoLaunches } from "./demoData.js";
-import type { CreatorPage, CreatorProfile, CreatorSort, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, TokenCreation, Trade } from "../types.js";
+import { buildDemoAttendeeReport, buildDemoCreator, buildDemoCreators, buildDemoDailyAnalytics, buildDemoTrades, demoLaunches } from "./demoData.js";
+import type { AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, TokenCreation, Trade } from "../types.js";
 import type { LaunchRepository } from "./LaunchRepository.js";
 import type { EtherscanService } from "./EtherscanService.js";
 import type { PriceService } from "./PriceService.js";
 import type { RpcMetricsProvider } from "./RpcMetricsProvider.js";
+import type { WalletIntelService } from "./WalletIntelService.js";
 import { getQuoteToken, isKnownQuote, isQuoteToken0, type DexAdapter } from "./skills/DexAdapter.js";
 
 interface AnalyzerOptions {
@@ -51,6 +52,8 @@ export class LaunchAnalyzer {
   priceService: PriceService | null;
   logChunk: number;
   repository: LaunchRepository | null;
+  // Assigned after construction (in live mode) so creator funding uses the shared cache.
+  walletIntel: WalletIntelService | null = null;
   private readonly blocks = new Map<number, Block>();
   private readonly tokenSymbols = new Map<string, string>();
   private readonly tokenDecimals = new Map<string, number>();
@@ -355,6 +358,18 @@ export class LaunchAnalyzer {
   }
 
   async #getFirstFunding(address: string): Promise<FundingDetails> {
+    // Prefer the shared funding cache so the creator's funding is reused by attendee
+    // analysis (and vice-versa) instead of re-querying Etherscan per view.
+    if (this.walletIntel) {
+      try {
+        const funding = await this.walletIntel.getFunding(address);
+        return funding
+          ? { firstFundedAt: funding.firstFundedAt, fundingSource: funding.fundingSource, fundingAmount: funding.fundingAmount }
+          : { firstFundedAt: null, fundingSource: null, fundingAmount: null };
+      } catch {
+        return { firstFundedAt: null, fundingSource: null, fundingAmount: null };
+      }
+    }
     if (!this.etherscan) {
       return { firstFundedAt: null, fundingSource: null, fundingAmount: null };
     }
@@ -370,6 +385,40 @@ export class LaunchAnalyzer {
     } catch {
       return { firstFundedAt: null, fundingSource: null, fundingAmount: null };
     }
+  }
+
+  // The stored attendee report for a launch (real/external volume + sybil clusters). In
+  // demo mode a synthetic report is returned; in live mode a not-yet-analyzed launch
+  // returns an unanalyzed stub that the UI can trigger analysis for.
+  async getAttendees(poolAddress: string): Promise<AttendeeReport> {
+    if (!this.provider) {
+      const launch = this.#demoLaunches().find((item) => item.poolAddress.toLowerCase() === poolAddress.toLowerCase());
+      if (!launch) throw new Error("Launch not found");
+      return buildDemoAttendeeReport(launch);
+    }
+    const stored = await this.#requireRepository().getAttendeeReport(poolAddress);
+    if (stored) return stored;
+    const launch = await this.#requireRepository().getByPoolAddress(poolAddress);
+    if (!launch) throw new Error("Launch not found");
+    return {
+      poolAddress: launch.poolAddress,
+      dex: this.adapter.id,
+      creator: launch.creator,
+      creatorFundingSource: null,
+      analyzed: false,
+      complete: false,
+      analyzedTrades: 0,
+      buyerCount: 0,
+      insiderBuyerCount: 0,
+      externalBuyerCount: 0,
+      totalVolumeUsd: null,
+      externalVolumeUsd: null,
+      insiderVolumeUsd: null,
+      insiderRatio: null,
+      buyers: [],
+      clusters: [],
+      updatedAt: null
+    };
   }
 
   async #getBlock(blockNumber: number): Promise<Block> {

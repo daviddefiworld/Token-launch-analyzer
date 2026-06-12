@@ -14,6 +14,7 @@ For the selected DEX you get:
 - Full launch list from that DEX's factory
 - Creator wallet history, first funding source, and previous launches
 - First 100 pool buyers and sellers from BaseScan `Swap` logs, each valued in real USD
+- **Attendee intelligence**: every buyer classified against the creator's funding graph, with **real (external) volume** that excludes the creator's self-buys and sybil cluster
 - Headline metrics for 24h volume of pools launched in the last 7 days and the last 24 hours
 
 ## Run
@@ -53,15 +54,58 @@ All DEX-specific logic lives behind a `DexAdapter` (`server/skills/DexAdapter.ts
 
 `server/skills/registry.ts` lists the adapters and defines the default. Shared V2-style math (swap decode + reserve read) is in `server/skills/v2Pool.ts`. To add a DEX, write a new adapter and register it — the analyzer, indexer, repository, and UI are otherwise DEX-agnostic.
 
+## Attendee intelligence & real volume
+
+The headline volume of a fresh launch is easy to fake: the creator funds a swarm of bot
+wallets from one private wallet and has them wash-trade the new token. This system separates
+that insider activity from genuine demand.
+
+For each launch the indexer classifies every trader (the swap recipient EOA) against the
+creator's **funding graph**:
+
+- **creator** — the buyer is the creator itself (a self-buy)
+- **creator-funded** — first funded directly by the creator wallet
+- **same-funder** — shares the creator's first funding wallet (a private funder)
+- **linked** — connected to the creator's cluster through a multi-hop funding chain
+- **external** — independent funding (real, external demand)
+
+A wallet's first funder is found from its first incoming transfer (Etherscan) and **cached
+forever** in the `walletfundings` collection — a wallet's first funder never changes, and
+because launch bots are reused across many launches, each wallet is investigated at most
+once and then served from cache everywhere. This is what makes classifying *every* launch
+tractable.
+
+**Real (external) volume** = total 24h volume − the volume traded by the creator's insider
+cluster. It is computed over the same swap window as `volumeUsd`, stored on each launch
+(`externalVolumeUsd`, `insiderVolumeUsd`, `insiderRatio`, buyer counts), shown in the launch
+list, and sortable. The per-buyer breakdown plus detected clusters (the creator's insider
+group, and "sniper rings" of external buyers sharing a private funder with each other) are
+stored per launch and shown in the **Attendee intelligence** panel. Open a launch to view it;
+in live mode you can trigger or refresh analysis on demand.
+
+### Avoiding false positives
+
+A shared funder is only a sybil signal if it is *private*. Wallets funded by the same
+exchange (e.g. everyone withdrawing from Coinbase) must not be linked. Funders that have
+seeded many distinct cached wallets (`PUBLIC_FUNDER_THRESHOLD`, default 75) are treated as
+public dispersers (CEX/bridge/router) and never create a sybil edge; a small seed denylist
+covers obvious cases before the cache warms. The creator wallet itself is never treated as
+public, so direct creator-funded bots are always caught. These thresholds are tunable in
+`server/WalletIntelService.ts`; the buyer's actual funder is always shown so you can judge.
+
+Caveat: the trader identity is the swap *recipient*, which is the end-user EOA for ordinary
+router swaps but can be an aggregator/router for multi-hop trades.
+
 ## Server structure
 
 - `server/index.ts`: Express routes, `?dex=` routing, and per-DEX analyzer/indexer startup.
 - `server/LaunchAnalyzer.ts`: DEX-agnostic Base RPC interpretation and dashboard analysis queries, driven by an injected adapter.
-- `server/LaunchIndexer.ts`: Resumable background indexing workflow (one per DEX).
+- `server/LaunchIndexer.ts`: Resumable background indexing workflow (one per DEX), including the attendee-intelligence backfill.
 - `server/LaunchRepository.ts`: MongoDB launch cache and indexed-block checkpoint, scoped by `dex`.
-- `server/MarketDataService.ts`: USD liquidity and 24h volume, decoding swaps/reserves via the adapter.
+- `server/MarketDataService.ts`: USD liquidity and 24h volume, plus `analyzeAttendees` (real volume + per-buyer report), decoding swaps/reserves via the adapter.
+- `server/WalletIntelService.ts`: cached funding lookups and the funding-cluster classifier (union-find, multi-hop, public-funder exclusion).
 
-MongoDB stores launches in the `launches` collection (each carries a `dex` field) and the durable per-DEX checkpoints in the `indexstates` collection. Token creation times are chain-global and cached once in `tokencreations`, shared across DEXes.
+MongoDB stores launches in the `launches` collection (each carries a `dex` field) and the durable per-DEX checkpoints in the `indexstates` collection. Token creation times are chain-global and cached once in `tokencreations`; wallet funding sources are likewise chain-global and cached in `walletfundings`; per-launch attendee reports live in `attendeereports`.
 
 Liquidity and 24-hour volume are computed in USD from on-chain data via the Etherscan v2 API and cached in MongoDB. Liquidity is the pool's quote-token reserve valued at 2×; volume sums each swap's quote leg over the last 24h. The quote token is priced as `$1` for USDC/USDT, the live ETH price for WETH, and a most-liquid DexScreener pair price for anything else (e.g. AERO). Pools whose quote is none of these fall back to DexScreener pair aggregates. Each trade in the order-flow view carries its own USD value using the same pricing.
 

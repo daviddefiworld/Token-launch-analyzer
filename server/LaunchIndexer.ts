@@ -35,6 +35,7 @@ export class LaunchIndexer {
   private timer?: NodeJS.Timeout;
   private activeSync?: Promise<void>;
   private lastMarketRefreshAt = 0;
+  private lastIntelRefreshAt = 0;
 
   constructor({ analyzer, repository, marketDataService, startBlock, blockChunk, intervalMs = 15_000 }: LaunchIndexerOptions) {
     this.analyzer = analyzer;
@@ -82,6 +83,7 @@ export class LaunchIndexer {
         await this.refreshMarketData(20);
       }
       await this.refreshMarketData(20);
+      await this.refreshIntel();
     } catch (error) {
       const message = this.getErrorMessage(error);
       this.status.error = message;
@@ -110,6 +112,45 @@ export class LaunchIndexer {
       console.warn(`Market data refresh failed: ${this.getErrorMessage(error)}`);
       throw error;
     }
+  }
+
+  // Backfill attendee intelligence (real/external volume + sybil clusters) for a few
+  // launches per cycle, highest-volume first. Funding lookups are cached globally, so the
+  // marginal cost falls sharply as the same bot wallets reappear across launches.
+  async refreshIntel(limit = 4, force = false): Promise<number> {
+    if (!force && Date.now() - this.lastIntelRefreshAt < 30_000) return 0;
+    this.lastIntelRefreshAt = Date.now();
+
+    const launches = await this.repository.getLaunchesForIntel(limit);
+    if (!launches.length) return 0;
+
+    let analyzed = 0;
+    // Sequential: each launch already fans many funding lookups onto the shared Etherscan
+    // limiter, so running launches one at a time keeps the request stream orderly.
+    for (const launch of launches) {
+      try {
+        const analysis = await this.marketDataService.analyzeAttendees(launch);
+        if (!analysis) continue;
+        await this.repository.saveLaunchIntel(launch.poolAddress, analysis.intel);
+        await this.repository.saveAttendeeReport(analysis.report);
+        analyzed += 1;
+      } catch (error) {
+        console.warn(`Attendee intel failed for ${launch.poolAddress}: ${this.getErrorMessage(error)}`);
+      }
+    }
+    return analyzed;
+  }
+
+  // On-demand deep analysis for one launch (the UI's attendee panel), with a larger lookup
+  // budget since a user is waiting. Returns whether a report was produced.
+  async analyzeLaunchNow(poolAddress: string): Promise<boolean> {
+    const launch = await this.repository.getByPoolAddress(poolAddress);
+    if (!launch) throw new Error("Launch not found");
+    const analysis = await this.marketDataService.analyzeAttendees(launch, { maxNewLookups: 150 });
+    if (!analysis) return false;
+    await this.repository.saveLaunchIntel(launch.poolAddress, analysis.intel);
+    await this.repository.saveAttendeeReport(analysis.report);
+    return true;
   }
 
   private getErrorMessage(error: unknown): string {

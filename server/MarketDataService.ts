@@ -1,8 +1,17 @@
 import { Contract, formatUnits, type ContractRunner } from "ethers";
-import type { Launch } from "../types.js";
+import type { AttendeeBuyer, AttendeeReport, Launch } from "../types.js";
 import type { EtherscanService } from "./EtherscanService.js";
 import type { PriceService } from "./PriceService.js";
+import type { TraderActivity, WalletIntelService } from "./WalletIntelService.js";
 import { getQuoteToken, isQuoteToken0, type DexAdapter } from "./skills/DexAdapter.js";
+
+// Top buyers retained in the stored per-launch attendee report (by volume).
+const MAX_REPORT_BUYERS = 100;
+
+export interface AttendeeAnalysis {
+  intel: Partial<Launch>;
+  report: AttendeeReport;
+}
 
 interface DexScreenerPair {
   pairAddress?: string;
@@ -38,7 +47,8 @@ export class MarketDataService {
     private readonly adapter: DexAdapter,
     private readonly etherscan: EtherscanService | null = null,
     private readonly priceService: PriceService | null = null,
-    private readonly provider: ContractRunner | null = null
+    private readonly provider: ContractRunner | null = null,
+    private readonly walletIntel: WalletIntelService | null = null
   ) {
     this.swapTopic = adapter.poolInterface.getEvent(adapter.swapEventName)!.topicHash;
   }
@@ -152,6 +162,96 @@ export class MarketDataService {
       if (swap) quoteTotal += swap.quoteAmountRaw;
     }
     return Number(formatUnits(quoteTotal, quoteDecimals)) * price;
+  }
+
+  // Classify a launch's traders against the creator's funding graph and split the swap
+  // window's volume into external (real demand) vs insider (the creator's sybil cluster).
+  // Uses the same 24h window as computeVolume, so external volume <= total volume.
+  async analyzeAttendees(launch: Launch, opts: { maxNewLookups?: number } = {}): Promise<AttendeeAnalysis | null> {
+    if (!this.etherscan || !this.walletIntel || !launch.quoteAddress) return null;
+    const quoteDecimals = await this.resolveQuoteDecimals(launch.quoteAddress);
+    if (quoteDecimals == null) return null;
+
+    const latestBlock = await this.etherscan.getBlockNumber();
+    const fromBlock = Math.max(latestBlock - BLOCKS_PER_DAY, launch.blockNumber);
+    const logs = await this.etherscan.getLogs({
+      address: launch.poolAddress,
+      topic0: this.swapTopic,
+      fromBlock,
+      toBlock: latestBlock
+    });
+
+    // Aggregate swaps by trader (the swap recipient EOA).
+    const quoteIsToken0 = isQuoteToken0(launch.quoteAddress, launch.tokenAddress);
+    const byTrader = new Map<string, { quoteRaw: bigint; tradeCount: number; firstTradeMs: number | null }>();
+    for (const log of logs) {
+      const swap = this.adapter.parseSwap({ topics: log.topics, data: log.data, quoteIsToken0 });
+      if (!swap || !swap.trader) continue;
+      const key = swap.trader.toLowerCase();
+      const entry = byTrader.get(key) ?? { quoteRaw: 0n, tradeCount: 0, firstTradeMs: null };
+      entry.quoteRaw += swap.quoteAmountRaw;
+      entry.tradeCount += 1;
+      const ms = log.timeStamp * 1000;
+      entry.firstTradeMs = entry.firstTradeMs == null ? ms : Math.min(entry.firstTradeMs, ms);
+      byTrader.set(key, entry);
+    }
+
+    const traders: TraderActivity[] = [...byTrader.entries()].map(([address, value]) => ({ address, ...value }));
+    const result = await this.walletIntel.classify(launch.creator, traders, { maxNewLookups: opts.maxNewLookups });
+
+    const price = this.priceService ? await this.priceService.getQuotePriceUsd(launch.quoteAddress) : null;
+    const toUsd = (raw: bigint): number | null => (price == null ? null : Number(formatUnits(raw, quoteDecimals)) * price);
+    const externalRaw = result.totalQuoteRaw - result.insiderQuoteRaw;
+    const insiderRatio = result.totalQuoteRaw > 0n ? Number(result.insiderQuoteRaw) / Number(result.totalQuoteRaw) : 0;
+    const launchMs = new Date(launch.createdAt).getTime();
+    const now = new Date().toISOString();
+
+    const buyers: AttendeeBuyer[] = result.buyers.slice(0, MAX_REPORT_BUYERS).map((buyer) => ({
+      address: buyer.address,
+      classification: buyer.classification,
+      fundingSource: buyer.fundingSource,
+      clusterId: buyer.clusterId,
+      tradeCount: buyer.tradeCount,
+      volumeUsd: toUsd(buyer.quoteRaw),
+      firstTradeAt: buyer.firstTradeMs != null ? new Date(buyer.firstTradeMs).toISOString() : null,
+      secondsAfterLaunch: buyer.firstTradeMs != null ? Math.max(0, Math.round((buyer.firstTradeMs - launchMs) / 1000)) : null
+    }));
+    const clusters = result.clusters.map((cluster) => ({
+      id: cluster.id,
+      kind: cluster.kind,
+      fundingSource: cluster.fundingSource,
+      memberCount: cluster.memberCount,
+      volumeUsd: toUsd(cluster.quoteRaw)
+    }));
+
+    const report: AttendeeReport = {
+      poolAddress: launch.poolAddress,
+      dex: launch.dex,
+      creator: launch.creator,
+      creatorFundingSource: result.creatorFundingSource,
+      analyzed: true,
+      complete: result.complete,
+      analyzedTrades: logs.length,
+      buyerCount: traders.length,
+      insiderBuyerCount: result.insiderBuyerCount,
+      externalBuyerCount: result.externalBuyerCount,
+      totalVolumeUsd: toUsd(result.totalQuoteRaw),
+      externalVolumeUsd: toUsd(externalRaw),
+      insiderVolumeUsd: toUsd(result.insiderQuoteRaw),
+      insiderRatio,
+      buyers,
+      clusters,
+      updatedAt: now
+    };
+    const intel: Partial<Launch> = {
+      externalVolumeUsd: toUsd(externalRaw),
+      insiderVolumeUsd: toUsd(result.insiderQuoteRaw),
+      insiderRatio,
+      insiderBuyerCount: result.insiderBuyerCount,
+      externalBuyerCount: result.externalBuyerCount,
+      intelUpdatedAt: now
+    };
+    return { intel, report };
   }
 
   // ---- DexScreener fallback (unknown quote tokens, or Etherscan failures) ----

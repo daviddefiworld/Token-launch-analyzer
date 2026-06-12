@@ -9,6 +9,7 @@ import { LaunchRepository } from "./LaunchRepository.js";
 import { MarketDataService } from "./MarketDataService.js";
 import { PriceService } from "./PriceService.js";
 import { RpcMetricsProvider } from "./RpcMetricsProvider.js";
+import { WalletIntelService } from "./WalletIntelService.js";
 import { DEFAULT_DEX_ID, listAdapters } from "./skills/registry.js";
 import type { CreatorSort, DexInfo, LaunchSort } from "../types.js";
 
@@ -157,6 +158,32 @@ app.get("/api/launches/:poolAddress/trades", async (request, response, next) => 
   }
 });
 
+app.get("/api/launches/:poolAddress/attendees", async (request, response, next) => {
+  try {
+    response.json(await resolveAnalyzer(request).getAttendees(request.params.poolAddress));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/launches/:poolAddress/attendees/analyze", async (request, response, next) => {
+  try {
+    const indexer = indexers.get(resolveAnalyzer(request).dexId);
+    if (!indexer) {
+      response.status(503).json({ error: "Attendee analysis requires live indexing" });
+      return;
+    }
+    const pool = request.params.poolAddress;
+    // Runs in the background (funding lookups can take a while); the UI polls the GET.
+    void indexer.analyzeLaunchNow(pool).catch((error) => {
+      console.warn(`Attendee analysis failed for ${pool}: ${error instanceof Error ? error.message : error}`);
+    });
+    response.json({ started: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 const errorHandler: ErrorRequestHandler = (error: Error, _request, response, _next) => {
   console.error(error);
   response.status(error.message === "Launch not found" ? 404 : 500).json({ error: error.message });
@@ -168,13 +195,18 @@ async function start(): Promise<void> {
   if (process.env.MONGODB_URI) {
     try {
       await mongoose.connect(process.env.MONGODB_URI);
+      // One shared funding cache / classifier across all DEXes — bot wallets are reused, so
+      // a wallet investigated for one launch is served from cache for every other.
+      let walletIntel: WalletIntelService | null = null;
       for (const adapter of adapters) {
         const analyzer = analyzers.get(adapter.id)!;
         // The default adapter also clears any pre-multi-DEX cached launches on first run.
         const repository = new LaunchRepository(adapter.id, adapter.id === DEFAULT_DEX_ID);
         analyzer.repository = repository;
+        if (etherscan && !walletIntel) walletIntel = new WalletIntelService(etherscan, repository);
+        analyzer.walletIntel = walletIntel;
         if (analyzer.mode === "live") {
-          const marketDataService = new MarketDataService(adapter, etherscan, priceService, analyzer.provider);
+          const marketDataService = new MarketDataService(adapter, etherscan, priceService, analyzer.provider, walletIntel);
           indexers.set(adapter.id, new LaunchIndexer({ analyzer, repository, marketDataService, startBlock, blockChunk: logChunk }));
         }
       }

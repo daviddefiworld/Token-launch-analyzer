@@ -150,6 +150,32 @@ a { color: #8effbd; }
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart-grid-line { stroke: #1f2836; stroke-width: 1; }
 .chart-label { fill: #687487; font-size: 9px; font-family: "DM Mono", monospace; }
+/* Real-volume column + attendee intelligence */
+.vol-cell { display: flex; flex-direction: column; gap: 2px; }
+.insider-tag { color: #f0b67a; font-size: 9px; font-weight: 800; }
+.insider-tag.high { color: #ff9090; }
+
+.attendee-panel { margin-top: 14px; }
+.attendee-metrics { margin: 4px 0 12px; }
+.insider-bar { position: relative; display: flex; align-items: center; height: 28px; margin: 0 0 14px; border-radius: 8px; background: #131b26; overflow: hidden; }
+.insider-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: #2c4a44; }
+.insider-bar-fill.high { background: #5a2330; }
+.insider-bar span { position: relative; padding: 0 11px; color: #c7cede; font-size: 10px; font-weight: 700; }
+.cluster-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.cluster-chip { display: flex; flex-direction: column; gap: 2px; padding: 9px 12px; border: 1px solid #243042; border-radius: 9px; background: #131b26; }
+.cluster-chip.creator-insider { border-color: #6a2a36; background: #1f141a; }
+.cluster-chip strong { font-size: 11px; color: #e6e9f3; }
+.cluster-chip span { color: #9aa4b3; font-size: 10px; }
+.cluster-chip small { color: #6f7a8a; font-size: 9px; }
+.attendee-table .table-row { grid-template-columns: 1.4fr .9fr .9fr .8fr .55fr; padding: 0 16px; }
+.attendee-row { min-height: 42px; }
+.attendee-badge { padding: 2px 8px; border-radius: 999px; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; }
+.attendee-badge.external { color: #7ff0aa; background: #16302a; }
+.attendee-badge.creator, .attendee-badge.creator-funded { color: #ff9b9b; background: #311a1f; }
+.attendee-badge.same-funder { color: #f4c07a; background: #312718; }
+.attendee-badge.linked { color: #d6a8ff; background: #251a31; }
+.attendee-note { margin-top: 10px; }
+
 @media (max-width: 1250px) {
   .workspace { padding-inline: 20px; }
   .analyst-grid { grid-template-columns: minmax(0, 1fr) 302px; }

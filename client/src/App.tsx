@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
-import type { ApiStatus, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
+import type { ApiStatus, AttendeeBuyer, AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/$/, "");
 
@@ -38,6 +38,21 @@ const short = (address: string | null | undefined, size = 5) =>
     ? "Unknown"
     : `${address.slice(0, size + 2)}...${address.slice(-4)}`;
 
+const formatDuration = (seconds: number) => {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+};
+
+const ATTENDEE_LABELS: Record<AttendeeBuyer["classification"], string> = {
+  creator: "creator",
+  "creator-funded": "creator-funded",
+  "same-funder": "same funder",
+  linked: "linked",
+  external: "external"
+};
+
 const fetchJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(`${API_URL}${path}`, init);
   if (!response.ok) throw new Error((await response.json()).error || "Request failed");
@@ -59,6 +74,8 @@ function App() {
   const [selected, setSelected] = useState<Launch | null>(null);
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [attendees, setAttendees] = useState<AttendeeReport | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const [search, setSearch] = useState("");
   const [poolType, setPoolType] = useState<PoolType>("all");
   const [sort, setSort] = useState<LaunchSort>("newest");
@@ -193,16 +210,41 @@ function App() {
     if (!selected || selected.dex !== dex) return;
     setCreator(null);
     setTrades([]);
+    setAttendees(null);
     Promise.all([
       fetchJson<CreatorProfile>(withDex(`/api/creators/${selected.creator}`, dex)),
-      fetchJson<Trade[]>(withDex(`/api/launches/${selected.poolAddress}/trades`, dex))
+      fetchJson<Trade[]>(withDex(`/api/launches/${selected.poolAddress}/trades`, dex)),
+      fetchJson<AttendeeReport>(withDex(`/api/launches/${selected.poolAddress}/attendees`, dex))
     ])
-      .then(([nextCreator, nextTrades]) => {
+      .then(([nextCreator, nextTrades, nextAttendees]) => {
         setCreator(nextCreator);
         setTrades(nextTrades);
+        setAttendees(nextAttendees);
       })
       .catch((requestError: Error) => setError(requestError.message));
   }, [dex, selected]);
+
+  const analyzeAttendees = useCallback(async () => {
+    if (!selected || analyzing || status?.mode !== "live") return;
+    setAnalyzing(true);
+    setError("");
+    const pool = selected.poolAddress;
+    try {
+      await fetchJson<{ started: boolean }>(withDex(`/api/launches/${pool}/attendees/analyze`, dex), { method: "POST" });
+      // Classification runs in the background; poll until the report is marked analyzed.
+      // A cold first analysis can take ~30s (many uncached funding lookups), so poll a while.
+      for (let attempt = 0; attempt < 16; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const report = await fetchJson<AttendeeReport>(withDex(`/api/launches/${pool}/attendees`, dex));
+        setAttendees(report);
+        if (report.analyzed) break;
+      }
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [analyzing, dex, selected, status?.mode]);
 
   const filteredTrades = trades.filter((trade) => tradeFilter === "all" || trade.side === tradeFilter);
   const buyCount = trades.filter((trade) => trade.side === "buy").length;
@@ -302,7 +344,7 @@ function App() {
                 </select>
               )}
               <select className="select-control" value={sort} onChange={(event) => setSort(event.target.value as LaunchSort)}>
-                <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="liquidity">Liquidity</option><option value="volume">24h volume</option>
+                <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="liquidity">Liquidity</option><option value="volume">24h volume</option><option value="realVolume">Real volume</option>
               </select>
               <select className="select-control" value={createdWithinDays} onChange={(event) => setCreatedWithinDays(event.target.value)}>
                 <option value="">Any token age at LP</option><option value="1">Created &lt; 1d before LP</option><option value="3">Created &lt; 3d before LP</option><option value="7">Created &lt; 1w before LP</option><option value="30">Created &lt; 1mo before LP</option>
@@ -312,7 +354,7 @@ function App() {
             </div>
             <div className="launch-table table-shell">
               <div className="table-row table-head">
-                <span>Pair</span><span>Creator</span><span>Liquidity</span><span>Volume</span>
+                <span>Pair</span><span>Creator</span><span>Liquidity</span><span>Real vol</span>
               </div>
               {loading && <div className="empty-state">Indexing launches...</div>}
               {!loading && launches.map((launch) => (
@@ -324,7 +366,12 @@ function App() {
                   <span className="pair-cell"><b className={`token-logo token-${launch.tokenSymbol.toLowerCase()}`}>{launch.tokenSymbol.slice(0, 1)}</b><span><strong>{launch.tokenSymbol}</strong><small>{launch.quoteSymbol} · {formatDate(launch.createdAt)}</small></span></span>
                   <span className="mono">{short(launch.creator)}</span>
                   <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
-                  <span>{formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</span>
+                  <span className="vol-cell">
+                    {formatLaunchUsd(launch.externalVolumeUsd ?? launch.volumeUsd, launch.marketDataUpdatedAt)}
+                    {launch.insiderRatio != null && launch.insiderRatio >= 0.05 && (
+                      <small className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}>{Math.round(launch.insiderRatio * 100)}% insider</small>
+                    )}
+                  </span>
                 </button>
               ))}
               <div className="scroll-sentinel" ref={scrollSentinel}>{loadingMore ? "Loading more launches..." : nextCursor ? "Scroll for more" : "All launches loaded"}</div>
@@ -394,6 +441,14 @@ function App() {
             ))}
           </div>
         </section>
+
+        <AttendeeIntelPanel
+          report={attendees}
+          loading={Boolean(selected && !attendees)}
+          analyzing={analyzing}
+          mode={status?.mode}
+          onAnalyze={() => void analyzeAttendees()}
+        />
         </>}
       </section>
     </main>
@@ -586,6 +641,96 @@ function CreatorProfilePanel({
         <div className="empty-state compact">Loading wallet history...</div>
       ) : (
         <div className="empty-state compact">{emptyMessage}</div>
+      )}
+    </section>
+  );
+}
+
+function AttendeeIntelPanel({
+  report,
+  loading,
+  analyzing,
+  mode,
+  onAnalyze
+}: {
+  report: AttendeeReport | null;
+  loading: boolean;
+  analyzing: boolean;
+  mode?: "demo" | "live";
+  onAnalyze: () => void;
+}) {
+  const insiderPct = report?.insiderRatio != null ? Math.round(report.insiderRatio * 100) : null;
+
+  return (
+    <section className="attendee-panel panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">Funding-graph analysis</span>
+          <h2>Attendee intelligence</h2>
+        </div>
+        {mode === "live" && (
+          <button type="button" className="refresh-button" onClick={onAnalyze} disabled={analyzing || loading} title="Classify buyers by funding source and compute real volume">
+            <RefreshIcon />
+            {analyzing ? "Analyzing..." : report?.analyzed ? "Re-analyze" : "Run analysis"}
+          </button>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="empty-state">Loading attendee intel...</div>
+      ) : !report || !report.analyzed ? (
+        <div className="empty-state">
+          {analyzing
+            ? "Classifying buyers by funding source..."
+            : mode === "live"
+              ? "Not analyzed yet. Run analysis to classify buyers and compute real (external) volume."
+              : "Attendee analysis runs in live mode (needs BASESCAN_API_KEY)."}
+        </div>
+      ) : (
+        <>
+          <section className="metrics attendee-metrics">
+            <Metric label="Real volume" value={report.externalVolumeUsd != null ? formatUsd(report.externalVolumeUsd) : "—"} hint="External, non-insider" icon={<ChartIcon />} />
+            <Metric label="Insider volume" value={report.insiderVolumeUsd != null ? formatUsd(report.insiderVolumeUsd) : "—"} hint={insiderPct != null ? `${insiderPct}% of total` : "Self-buys / sybils"} icon={<ShieldIcon />} danger={insiderPct != null && insiderPct >= 30} />
+            <Metric label="External buyers" value={report.externalBuyerCount} hint="Independent funding" icon={<UsersIcon />} />
+            <Metric label="Insider buyers" value={report.insiderBuyerCount} hint="Creator's cluster" icon={<WalletIcon />} />
+          </section>
+
+          {insiderPct != null && (
+            <div className="insider-bar" title={`${insiderPct}% of volume is from the creator's funding cluster`}>
+              <div className={`insider-bar-fill ${insiderPct >= 40 ? "high" : ""}`} style={{ width: `${Math.min(100, insiderPct)}%` }} />
+              <span>{insiderPct}% insider / sybil volume · {report.buyerCount} buyers analyzed</span>
+            </div>
+          )}
+
+          {report.clusters.length > 0 && (
+            <div className="cluster-row">
+              {report.clusters.map((cluster) => (
+                <div className={`cluster-chip ${cluster.kind}`} key={cluster.id}>
+                  <strong>{cluster.kind === "creator-insider" ? "Creator cluster" : `Sniper ring #${cluster.id}`}</strong>
+                  <span>{cluster.memberCount} wallets · {cluster.volumeUsd != null ? formatUsd(cluster.volumeUsd) : "—"}</span>
+                  {cluster.fundingSource && <small className="mono">funder {short(cluster.fundingSource, 5)}</small>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="attendee-table table-shell">
+            <div className="table-row table-head">
+              <span>Buyer</span><span>Class</span><span>Funder</span><span>Volume</span><span>After LP</span>
+            </div>
+            {report.buyers.slice(0, 20).map((buyer) => (
+              <div className="table-row attendee-row" key={buyer.address}>
+                <span className="mono">{short(buyer.address, 7)}</span>
+                <span><b className={`attendee-badge ${buyer.classification}`}>{ATTENDEE_LABELS[buyer.classification]}</b></span>
+                <span className="mono">{short(buyer.fundingSource, 5)}</span>
+                <span>{buyer.volumeUsd != null ? formatTradeUsd(buyer.volumeUsd) : "—"}</span>
+                <span>{buyer.secondsAfterLaunch != null ? formatDuration(buyer.secondsAfterLaunch) : "—"}</span>
+              </div>
+            ))}
+          </div>
+
+          {!report.complete && <div className="muted attendee-note">Partial result — some buyers are still pending a funding lookup. Re-analyze to refine.</div>}
+        </>
       )}
     </section>
   );

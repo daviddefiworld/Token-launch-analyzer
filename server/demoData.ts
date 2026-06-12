@@ -1,4 +1,4 @@
-import type { CreatorProfile, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, Trade } from "../types.js";
+import type { AttendeeBuyer, AttendeeClass, AttendeeCluster, AttendeeReport, CreatorProfile, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, Trade } from "../types.js";
 
 export const demoLaunches: Launch[] = [
   {
@@ -234,6 +234,20 @@ export const demoLaunches: Launch[] = [
   }
 ];
 
+// Synthesize attendee-intelligence aggregates so the real-volume column and sybil badges
+// are populated in demo mode. Ratios are hand-picked per launch to show a range.
+const DEMO_INSIDER_RATIOS = [0.42, 0.08, 0.61, 0.05, 0.55, 0.18, 0.34, 0.11, 0.72, 0.27, 0.49];
+for (const [index, launch] of demoLaunches.entries()) {
+  const insiderRatio = DEMO_INSIDER_RATIOS[index] ?? 0.2;
+  const approxBuyers = Math.max(3, Math.round((launch.firstTrades ?? 30) / 3));
+  launch.insiderRatio = insiderRatio;
+  launch.insiderVolumeUsd = Math.round((launch.volumeUsd ?? 0) * insiderRatio);
+  launch.externalVolumeUsd = (launch.volumeUsd ?? 0) - launch.insiderVolumeUsd;
+  launch.insiderBuyerCount = Math.round(approxBuyers * insiderRatio);
+  launch.externalBuyerCount = approxBuyers - launch.insiderBuyerCount;
+  launch.intelUpdatedAt = launch.createdAt;
+}
+
 const wallets = [
   "0x40a93fa77036720eac1ba73cc9a1b67924d1c801",
   "0xc818e430f54a564960f8bdc8755add473742c802",
@@ -258,6 +272,65 @@ export const buildDemoTrades = (launch: Launch): Trade[] =>
       txHash: `0x${(index + 101).toString(16).padStart(64, "0")}`
     };
   });
+
+// A synthetic attendee report derived from the demo trades, flagging a deterministic
+// subset as the creator's insider cluster (same private funder).
+export const buildDemoAttendeeReport = (launch: Launch): AttendeeReport => {
+  const trades = buildDemoTrades(launch);
+  const creatorFundingSource = "0x983ac2683af532eeed4f31ed18de96f4f16a30a1";
+  const launchMs = new Date(launch.createdAt).getTime();
+
+  const byTrader = new Map<string, { volumeUsd: number; tradeCount: number; firstTradeAt: string }>();
+  for (const trade of trades) {
+    const entry = byTrader.get(trade.trader) ?? { volumeUsd: 0, tradeCount: 0, firstTradeAt: trade.timestamp };
+    entry.volumeUsd += trade.amountUsd ?? 0;
+    entry.tradeCount += 1;
+    if (trade.timestamp < entry.firstTradeAt) entry.firstTradeAt = trade.timestamp;
+    byTrader.set(trade.trader, entry);
+  }
+
+  const buyers: AttendeeBuyer[] = [...byTrader.entries()].map(([address, entry], index) => {
+    const insider = index % 3 === 0;
+    const classification: AttendeeClass = !insider ? "external" : index === 0 ? "creator-funded" : "same-funder";
+    return {
+      address,
+      classification,
+      fundingSource: insider ? creatorFundingSource : `0x${(index + 0x5100).toString(16).padStart(40, "0")}`,
+      clusterId: insider ? 0 : null,
+      tradeCount: entry.tradeCount,
+      volumeUsd: Math.round(entry.volumeUsd),
+      firstTradeAt: entry.firstTradeAt,
+      secondsAfterLaunch: Math.max(0, Math.round((new Date(entry.firstTradeAt).getTime() - launchMs) / 1000))
+    };
+  }).sort((left, right) => (right.volumeUsd ?? 0) - (left.volumeUsd ?? 0));
+
+  const insiderBuyers = buyers.filter((buyer) => buyer.classification !== "external");
+  const insiderVolumeUsd = insiderBuyers.reduce((sum, buyer) => sum + (buyer.volumeUsd ?? 0), 0);
+  const totalVolumeUsd = buyers.reduce((sum, buyer) => sum + (buyer.volumeUsd ?? 0), 0);
+  const clusters: AttendeeCluster[] = insiderBuyers.length
+    ? [{ id: 0, kind: "creator-insider", fundingSource: creatorFundingSource, memberCount: insiderBuyers.length, volumeUsd: insiderVolumeUsd }]
+    : [];
+
+  return {
+    poolAddress: launch.poolAddress,
+    dex: launch.dex,
+    creator: launch.creator,
+    creatorFundingSource,
+    analyzed: true,
+    complete: true,
+    analyzedTrades: trades.length,
+    buyerCount: buyers.length,
+    insiderBuyerCount: insiderBuyers.length,
+    externalBuyerCount: buyers.length - insiderBuyers.length,
+    totalVolumeUsd,
+    externalVolumeUsd: totalVolumeUsd - insiderVolumeUsd,
+    insiderVolumeUsd,
+    insiderRatio: totalVolumeUsd > 0 ? insiderVolumeUsd / totalVolumeUsd : 0,
+    buyers,
+    clusters,
+    updatedAt: launch.createdAt
+  };
+};
 
 export const buildDemoCreator = (creator: string, launches: Launch[] = demoLaunches): CreatorProfile => {
   const previousLaunches = launches.filter((launch) => launch.creator === creator);

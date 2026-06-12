@@ -1,8 +1,9 @@
 import mongoose from "mongoose";
-import type { CreatorPage, CreatorSort, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, TokenCreation } from "../types.js";
+import type { AttendeeReport, CreatorPage, CreatorSort, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, TokenCreation } from "../types.js";
 import type { MarketData } from "./MarketDataService.js";
+import type { WalletFunding } from "./WalletIntelService.js";
 
-const INDEX_VERSION = 5;
+const INDEX_VERSION = 6;
 
 interface IndexState {
   _id: string;
@@ -30,6 +31,12 @@ const launchSchema = new mongoose.Schema<Launch>(
     poolTypeLabel: { type: String, required: true },
     liquidityUsd: { type: Number, default: null },
     volumeUsd: { type: Number, default: null },
+    externalVolumeUsd: { type: Number, default: null },
+    insiderVolumeUsd: { type: Number, default: null },
+    insiderRatio: { type: Number, default: null },
+    insiderBuyerCount: { type: Number, default: null },
+    externalBuyerCount: { type: Number, default: null },
+    intelUpdatedAt: { type: String, default: null },
     marketDataUpdatedAt: { type: String, default: null },
     firstTrades: { type: Number, default: null },
     risk: { type: String, required: true }
@@ -55,6 +62,48 @@ const tokenCreationSchema = new mongoose.Schema<TokenCreation>(
   { versionKey: false }
 );
 const TokenCreationModel = mongoose.models.TokenCreation || mongoose.model<TokenCreation>("TokenCreation", tokenCreationSchema);
+
+// Global, cross-launch funding cache. A wallet's first funder never changes, so once a bot
+// is investigated it is served from here for every future launch it appears in.
+const walletFundingSchema = new mongoose.Schema<WalletFunding>(
+  {
+    address: { type: String, required: true, unique: true },
+    fundingSource: { type: String, default: null, index: true },
+    firstFundedAt: { type: String, default: null },
+    fundingAmount: { type: String, default: null },
+    fetchedAt: { type: String, required: true }
+  },
+  { versionKey: false }
+);
+const WalletFundingModel = mongoose.models.WalletFunding || mongoose.model<WalletFunding>("WalletFunding", walletFundingSchema);
+
+// Per-launch attendee-intelligence report (the detailed per-buyer breakdown). Aggregates
+// also live on the Launch doc for list-wide sorting; the full buyer list lives here.
+// Loosely typed (no schema generic) so the nested buyers/clusters arrays can be stored as
+// Mixed; reads are typed via .lean<AttendeeReport>().
+const attendeeReportSchema = new mongoose.Schema(
+  {
+    poolAddress: { type: String, required: true, unique: true },
+    dex: { type: String, required: true, index: true },
+    creator: { type: String, required: true },
+    creatorFundingSource: { type: String, default: null },
+    analyzed: { type: Boolean, default: false },
+    complete: { type: Boolean, default: false },
+    analyzedTrades: { type: Number, default: 0 },
+    buyerCount: { type: Number, default: 0 },
+    insiderBuyerCount: { type: Number, default: 0 },
+    externalBuyerCount: { type: Number, default: 0 },
+    totalVolumeUsd: { type: Number, default: null },
+    externalVolumeUsd: { type: Number, default: null },
+    insiderVolumeUsd: { type: Number, default: null },
+    insiderRatio: { type: Number, default: null },
+    buyers: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    clusters: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    updatedAt: { type: String, default: null }
+  },
+  { versionKey: false }
+);
+const AttendeeReportModel = mongoose.models.AttendeeReport || mongoose.model("AttendeeReport", attendeeReportSchema);
 
 // One repository per DEX. All launch queries are scoped to the adapter's `dex` id and each
 // DEX keeps its own indexing checkpoint, so the three DEXes share collections without their
@@ -300,8 +349,66 @@ export class LaunchRepository {
       .lean<Launch[]>();
   }
 
+  // Launches with real volume worth analyzing whose attendee intel is missing or stale.
+  // Never-analyzed launches come first, then highest-volume; funding never changes, so a
+  // generous staleness window suffices.
+  async getLaunchesForIntel(limit: number): Promise<Launch[]> {
+    const staleBefore = new Date(Date.now() - 30 * 60_000).toISOString();
+    return LaunchModel.find({
+      dex: this.dexId,
+      volumeUsd: { $gt: 0 },
+      $or: [
+        { intelUpdatedAt: null },
+        { intelUpdatedAt: { $exists: false } },
+        { intelUpdatedAt: { $lt: staleBefore } }
+      ]
+    })
+      .sort({ intelUpdatedAt: 1, volumeUsd: -1 })
+      .limit(limit)
+      .lean<Launch[]>();
+  }
+
   async saveMarketData(data: MarketData): Promise<void> {
     await LaunchModel.updateOne({ poolAddress: data.poolAddress }, { $set: data });
+  }
+
+  // ---- Attendee intelligence: wallet funding cache, funder out-degree, reports ----
+
+  async getWalletFundings(addresses: string[]): Promise<Map<string, WalletFunding>> {
+    if (!addresses.length) return new Map();
+    const rows = await WalletFundingModel.find({ address: { $in: addresses } }).lean<WalletFunding[]>();
+    return new Map(rows.map((row) => [row.address, row]));
+  }
+
+  async saveWalletFundings(records: WalletFunding[]): Promise<void> {
+    if (!records.length) return;
+    await WalletFundingModel.bulkWrite(records.map((record) => ({
+      updateOne: { filter: { address: record.address }, update: { $set: record }, upsert: true }
+    })));
+  }
+
+  // How many distinct cached wallets each funder has seeded — high counts mark public
+  // dispersers (CEX/bridge), which must not be treated as a sybil link.
+  async getFunderCounts(funders: string[]): Promise<Map<string, number>> {
+    if (!funders.length) return new Map();
+    const rows = await WalletFundingModel.aggregate<{ _id: string; count: number }>([
+      { $match: { fundingSource: { $in: funders } } },
+      { $group: { _id: "$fundingSource", count: { $sum: 1 } } }
+    ]);
+    return new Map(rows.map((row) => [row._id, row.count]));
+  }
+
+  async getAttendeeReport(poolAddress: string): Promise<AttendeeReport | null> {
+    return AttendeeReportModel.findOne({ dex: this.dexId, poolAddress }).lean<AttendeeReport | null>();
+  }
+
+  async saveAttendeeReport(report: AttendeeReport): Promise<void> {
+    await AttendeeReportModel.updateOne({ poolAddress: report.poolAddress }, { $set: report }, { upsert: true });
+  }
+
+  // Persist the list-wide intel aggregates onto the launch for sorting/filtering.
+  async saveLaunchIntel(poolAddress: string, intel: Partial<Launch>): Promise<void> {
+    await LaunchModel.updateOne({ poolAddress }, { $set: intel });
   }
 
   async getTokenCreation(address: string): Promise<TokenCreation | null> {
@@ -321,7 +428,9 @@ export class LaunchRepository {
       ? launch.liquidityUsd ?? -1
       : sort === "volume"
         ? launch.volumeUsd ?? -1
-        : launch.blockNumber;
+        : sort === "realVolume"
+          ? launch.externalVolumeUsd ?? -1
+          : launch.blockNumber;
     return Buffer.from(JSON.stringify({ value, id: launch.id })).toString("base64url");
   }
 
@@ -333,7 +442,7 @@ export class LaunchRepository {
 
   private getCursorFilter(cursor: string, sort: LaunchSort): Record<string, unknown> {
     const { value, id } = this.decodeCursor(cursor);
-    const field = sort === "liquidity" ? "liquidityUsd" : sort === "volume" ? "volumeUsd" : "blockNumber";
+    const field = sort === "liquidity" ? "liquidityUsd" : sort === "volume" ? "volumeUsd" : sort === "realVolume" ? "externalVolumeUsd" : "blockNumber";
     const operator = sort === "oldest" ? "$gt" : "$lt";
     return { $or: [{ [field]: { [operator]: value } }, { [field]: value, id: { $lt: id } }] };
   }
@@ -342,6 +451,7 @@ export class LaunchRepository {
     if (sort === "oldest") return { blockNumber: 1, id: -1 };
     if (sort === "liquidity") return { liquidityUsd: -1, id: -1 };
     if (sort === "volume") return { volumeUsd: -1, id: -1 };
+    if (sort === "realVolume") return { externalVolumeUsd: -1, id: -1 };
     return { blockNumber: -1, id: -1 };
   }
 
