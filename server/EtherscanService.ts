@@ -93,8 +93,11 @@ export class EtherscanService {
     return typeof envelope.result === "string" ? Number(envelope.result) : 0;
   }
 
-  async getLogs(options: { address: string; topic0: string; fromBlock: number; toBlock: number; offset?: number; maxPages?: number }): Promise<EtherscanLog[]> {
-    const { address, topic0, fromBlock, toBlock, offset = 1000, maxPages = 5 } = options;
+  // `warnOnCap` controls whether hitting the page cap logs a truncation warning. Callers
+  // that intentionally cap results (e.g. the first-100-trades view, maxPages: 1) pass false,
+  // since for them truncation is expected rather than a data-quality concern.
+  async getLogs(options: { address: string; topic0: string; fromBlock: number; toBlock: number; offset?: number; maxPages?: number; warnOnCap?: boolean }): Promise<EtherscanLog[]> {
+    const { address, topic0, fromBlock, toBlock, offset = 1000, maxPages = 5, warnOnCap = true } = options;
     const logs: EtherscanLog[] = [];
 
     for (let page = 1; page <= maxPages; page++) {
@@ -120,8 +123,8 @@ export class EtherscanService {
         });
       }
       if (rows.length < offset) break;
-      if (page === maxPages) {
-        console.warn(`Etherscan getLogs hit the ${maxPages}-page cap for ${address}; volume may be undercounted.`);
+      if (page === maxPages && warnOnCap) {
+        console.warn(`Etherscan getLogs hit the ${maxPages}-page cap for ${address}; older logs were not fetched.`);
       }
     }
 

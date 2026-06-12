@@ -166,7 +166,9 @@ export class LaunchAnalyzer {
       fromBlock: launch.blockNumber,
       toBlock: 99_999_999,
       offset: 100,
-      maxPages: 1
+      maxPages: 1,
+      // We only ever want the first 100 trades, so hitting the cap here is by design.
+      warnOnCap: false
     });
     return logs.slice(0, 100).map((log, index) => this.#buildTrade({
       topics: log.topics,
