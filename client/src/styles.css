@@ -184,6 +184,10 @@ a { color: #8effbd; }
 .wallet-graph { border: 1px solid #1e2735; border-radius: 10px; background: #0e141d; padding: 6px; }
 .wallet-graph-svg { display: block; width: 100%; height: auto; }
 .graph-edge { stroke: #2b3647; stroke-width: 1; }
+.wallet-graph-svg a { cursor: pointer; }
+.wallet-graph-svg circle { transition: stroke .12s ease; }
+.wallet-graph-svg a:hover circle { stroke: #fff; stroke-width: 2.5; }
+.cluster-funder { color: #6f7a8a; font-size: 9px; }
 .graph-legend { display: flex; flex-wrap: wrap; gap: 14px; padding: 10px 6px 4px; }
 .graph-legend span { display: inline-flex; align-items: center; gap: 6px; color: #97a1b1; font-size: 10px; }
 .graph-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }

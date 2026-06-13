@@ -38,6 +38,14 @@ const short = (address: string | null | undefined, size = 5) =>
     ? "Unknown"
     : `${address.slice(0, size + 2)}...${address.slice(-4)}`;
 
+const baseScanAddress = (address: string) => `https://basescan.org/address/${address}`;
+
+// A wallet address rendered as a BaseScan link (or plain text when unknown).
+const WalletLink = ({ address, size = 5 }: { address: string | null | undefined; size?: number }) =>
+  !address || address === "unknown"
+    ? <span className="mono">Unknown</span>
+    : <a className="address-link mono" href={baseScanAddress(address)} target="_blank" rel="noreferrer">{short(address, size)}</a>;
+
 const formatDuration = (seconds: number) => {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
@@ -737,8 +745,8 @@ function WalletGraph({ graph }: { graph: AttendeeGraph }) {
           <line key={index} x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} className="graph-edge" />
         ))}
         {layout.nodes.map((node) => (
-          <g key={node.address}>
-            <title>{`${node.address}\n${node.role}${node.volumeUsd != null ? ` · ${formatUsd(node.volumeUsd)}` : ""}`}</title>
+          <a key={node.address} href={baseScanAddress(node.address)} target="_blank" rel="noreferrer">
+            <title>{`${node.address}\n${node.role}${node.volumeUsd != null ? ` · ${formatUsd(node.volumeUsd)}` : ""}\nClick to open on BaseScan`}</title>
             <circle
               cx={node.x}
               cy={node.y}
@@ -747,7 +755,7 @@ function WalletGraph({ graph }: { graph: AttendeeGraph }) {
               stroke={node.role === "creator" ? "#fff" : "rgba(0,0,0,.35)"}
               strokeWidth={node.role === "creator" ? 2.5 : 1}
             />
-          </g>
+          </a>
         ))}
       </svg>
       <div className="graph-legend">
@@ -823,7 +831,9 @@ function AttendeeIntelPanel({
                 <div className={`cluster-chip ${cluster.kind}`} key={cluster.id}>
                   <strong>{cluster.kind === "creator-insider" ? "Creator cluster" : `Sniper ring #${cluster.id}`}</strong>
                   <span>{cluster.memberCount} wallets · {cluster.volumeUsd != null ? formatUsd(cluster.volumeUsd) : "—"}</span>
-                  {cluster.fundingSource && <small className="mono">funder {short(cluster.fundingSource, 5)}</small>}
+                  {cluster.fundingSource && (
+                    <small className="cluster-funder">funder <WalletLink address={cluster.fundingSource} size={5} /></small>
+                  )}
                 </div>
               ))}
             </div>
@@ -845,9 +855,9 @@ function AttendeeIntelPanel({
             </div>
             {report.buyers.slice(0, 20).map((buyer) => (
               <div className="table-row attendee-row" key={buyer.address}>
-                <span className="mono">{short(buyer.address, 7)}</span>
+                <span><WalletLink address={buyer.address} size={7} /></span>
                 <span><b className={`attendee-badge ${buyer.classification}`}>{ATTENDEE_LABELS[buyer.classification]}</b></span>
-                <span className="mono">{short(buyer.fundingSource, 5)}</span>
+                <span><WalletLink address={buyer.fundingSource} size={5} /></span>
                 <span>{buyer.volumeUsd != null ? formatTradeUsd(buyer.volumeUsd) : "—"}</span>
                 <span>{buyer.secondsAfterLaunch != null ? formatDuration(buyer.secondsAfterLaunch) : "—"}</span>
               </div>
