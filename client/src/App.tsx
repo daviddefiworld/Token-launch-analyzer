@@ -903,15 +903,23 @@ function AttendeeIntelPanel({
             </div>
           )}
 
-          {report.graph && report.graph.nodes.length > 1 && (
-            <div className="graph-section">
-              <div className="graph-heading">
-                <span className="eyebrow">Wallet relationships</span>
+          <div className="graph-section">
+            <div className="graph-heading">
+              <span className="eyebrow">Wallet relationships</span>
+              {report.graph && report.graph.nodes.length > 1 && (
                 <span className="muted">{report.graph.nodes.length} wallets · {report.graph.edges.length} funding links</span>
-              </div>
-              <WalletGraph graph={report.graph} />
+              )}
             </div>
-          )}
+            {report.graph && report.graph.nodes.length > 1 ? (
+              <WalletGraph graph={report.graph} />
+            ) : (
+              <p className="muted graph-empty">
+                {!report.graph
+                  ? "This report predates the relationship graph — re-analyze to build it."
+                  : "No linked wallets to map: no buyer swaps were found in the analyzed window."}
+              </p>
+            )}
+          </div>
 
           <div className="attendee-table table-shell">
             <div className="table-row table-head">

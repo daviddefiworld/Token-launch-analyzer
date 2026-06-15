@@ -217,6 +217,7 @@ a { color: #8effbd; }
 
 .graph-section { margin-bottom: 16px; }
 .graph-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.graph-empty { margin: 0; padding: 14px 0; font-size: 11px; }
 .wallet-graph { border: 1px solid #1e2735; border-radius: 10px; background: #0e141d; padding: 6px; }
 .wallet-graph-svg { display: block; width: 100%; height: auto; }
 .graph-edge { stroke: #2b3647; stroke-width: 1; }
