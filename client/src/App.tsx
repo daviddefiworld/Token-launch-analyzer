@@ -921,7 +921,10 @@ function AttendeeIntelPanel({
               <div className="table-row attendee-row" key={buyer.address}>
                 <span><WalletLink address={buyer.address} size={7} /></span>
                 <span><b className={`attendee-badge ${buyer.classification}`}>{ATTENDEE_LABELS[buyer.classification]}</b></span>
-                <span><WalletLink address={buyer.fundingSource} size={5} /></span>
+                <span className="funder-cell">
+                  <WalletLink address={buyer.fundingSource} size={5} />
+                  {buyer.fundingTxHash && <a className="tx-link" href={`https://basescan.org/tx/${buyer.fundingTxHash}`} target="_blank" rel="noreferrer" title="Funding transaction on BaseScan"><ArrowIcon /></a>}
+                </span>
                 <span>{buyer.volumeUsd != null ? formatTradeUsd(buyer.volumeUsd) : "—"}</span>
                 <span>{buyer.secondsAfterLaunch != null ? formatDuration(buyer.secondsAfterLaunch) : "—"}</span>
               </div>

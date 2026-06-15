@@ -34,6 +34,7 @@ export interface IncomingTransfer {
   from: string;
   value: string;
   timeStamp: number;
+  hash: string;
 }
 
 interface EtherscanEnvelope {
@@ -145,7 +146,7 @@ export class EtherscanService {
     const rows = Array.isArray(envelope.result) ? envelope.result as Array<Record<string, string>> : [];
     const transfer = rows.find((tx) => tx.to?.toLowerCase() === address.toLowerCase() && tx.value !== "0");
     return transfer
-      ? { from: transfer.from, value: transfer.value, timeStamp: Number(transfer.timeStamp) }
+      ? { from: transfer.from, value: transfer.value, timeStamp: Number(transfer.timeStamp), hash: transfer.hash }
       : null;
   }
 

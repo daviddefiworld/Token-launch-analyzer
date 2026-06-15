@@ -230,6 +230,7 @@ export class MarketDataService {
       address: buyer.address,
       classification: buyer.classification,
       fundingSource: buyer.fundingSource,
+      fundingTxHash: buyer.fundingTxHash,
       clusterId: buyer.clusterId,
       tradeCount: buyer.tradeCount,
       volumeUsd: toUsd(buyer.quoteRaw),

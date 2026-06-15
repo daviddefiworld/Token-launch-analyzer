@@ -85,6 +85,7 @@ const walletFundingSchema = new mongoose.Schema<WalletFunding>(
   {
     address: { type: String, required: true, unique: true },
     fundingSource: { type: String, default: null, index: true },
+    fundingTxHash: { type: String, default: null },
     firstFundedAt: { type: String, default: null },
     fundingAmount: { type: String, default: null },
     fetchedAt: { type: String, required: true }

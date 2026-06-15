@@ -9,6 +9,7 @@ import type { LaunchRepository } from "./LaunchRepository.js";
 export interface WalletFunding {
   address: string;
   fundingSource: string | null;
+  fundingTxHash: string | null;
   firstFundedAt: string | null;
   fundingAmount: string | null;
   fetchedAt: string;
@@ -25,6 +26,7 @@ export interface ClassifiedBuyer {
   address: string;
   classification: AttendeeClass;
   fundingSource: string | null;
+  fundingTxHash: string | null;
   clusterId: number | null;
   quoteRaw: bigint;
   tradeCount: number;
@@ -169,7 +171,7 @@ export class WalletIntelService {
       if (!record) complete = false;
       if (classification === "external") externalBuyerCount += 1;
       else { insiderBuyerCount += 1; insiderQuoteRaw += trader.quoteRaw; }
-      return { address: trader.address, classification, fundingSource, clusterId: null, quoteRaw: trader.quoteRaw, tradeCount: trader.tradeCount, firstTradeMs: trader.firstTradeMs };
+      return { address: trader.address, classification, fundingSource, fundingTxHash: record?.fundingTxHash ?? null, clusterId: null, quoteRaw: trader.quoteRaw, tradeCount: trader.tradeCount, firstTradeMs: trader.firstTradeMs };
     });
 
     const clusters = this.buildClusters(classified, creatorFundingSource, isPublic);
@@ -291,6 +293,7 @@ export class WalletIntelService {
         const record: WalletFunding = {
           address,
           fundingSource: transfer ? transfer.from.toLowerCase() : null,
+          fundingTxHash: transfer ? transfer.hash : null,
           firstFundedAt: transfer ? new Date(transfer.timeStamp * 1000).toISOString() : null,
           fundingAmount: transfer ? `${Number(formatEther(transfer.value)).toFixed(4)} ETH` : null,
           fetchedAt: new Date().toISOString()

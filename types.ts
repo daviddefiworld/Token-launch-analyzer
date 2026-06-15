@@ -51,6 +51,7 @@ export interface AttendeeBuyer {
   address: string;
   classification: AttendeeClass;
   fundingSource: string | null;
+  fundingTxHash: string | null;
   clusterId: number | null;
   tradeCount: number;
   volumeUsd: number | null;
