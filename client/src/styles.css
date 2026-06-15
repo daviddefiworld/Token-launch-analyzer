@@ -78,6 +78,20 @@ h2 { margin-top: 4px; font-size: 17px; }
 .table-head { min-height: 36px; color: #687487; background: #111721; font-size: 9px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
 .launch-table .table-row { grid-template-columns: 1.5fr 1.1fr .85fr .85fr; padding: 0 16px; }
 .launch-table { max-height: 502px; overflow-y: auto; }
+
+/* Slim, theme-matched scrollbar for the table/list scroll areas. */
+.launch-table, .creator-table, .mini-history {
+  scrollbar-width: thin;
+  scrollbar-color: #2c3a4c transparent;
+}
+.launch-table::-webkit-scrollbar, .creator-table::-webkit-scrollbar, .mini-history::-webkit-scrollbar { width: 8px; }
+.launch-table::-webkit-scrollbar-track, .creator-table::-webkit-scrollbar-track, .mini-history::-webkit-scrollbar-track { background: transparent; }
+.launch-table::-webkit-scrollbar-thumb, .creator-table::-webkit-scrollbar-thumb, .mini-history::-webkit-scrollbar-thumb {
+  background: #2c3a4c; border-radius: 99px; border: 2px solid transparent; background-clip: padding-box;
+}
+.launch-table::-webkit-scrollbar-thumb:hover, .creator-table::-webkit-scrollbar-thumb:hover, .mini-history::-webkit-scrollbar-thumb:hover {
+  background: #3c4f66; background-clip: padding-box;
+}
 .launch-table .table-head { position: sticky; top: 0; z-index: 1; }
 .scroll-sentinel { padding: 12px; color: #7d8797; font-size: 10px; text-align: center; }
 .launch-row { min-height: 66px; }
