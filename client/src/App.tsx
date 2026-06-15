@@ -931,6 +931,8 @@ function AttendeeIntelPanel({
                 <span><b className={`attendee-badge ${buyer.classification}`}>{ATTENDEE_LABELS[buyer.classification]}</b></span>
                 <span className="funder-cell">
                   <WalletLink address={buyer.fundingSource} size={5} />
+                  {buyer.fundingVia === "internal" && <b className="funder-tag contract" title="First funded through a smart contract (internal tx)">contract</b>}
+                  {buyer.funderCount > 1 && <b className="funder-tag" title={`${buyer.funderCount} distinct funding sources`}>+{buyer.funderCount - 1}</b>}
                   {buyer.fundingTxHash && <a className="tx-link" href={`https://basescan.org/tx/${buyer.fundingTxHash}`} target="_blank" rel="noreferrer" title="Funding transaction on BaseScan"><ArrowIcon /></a>}
                 </span>
                 <span>{buyer.volumeUsd != null ? formatTradeUsd(buyer.volumeUsd) : "—"}</span>

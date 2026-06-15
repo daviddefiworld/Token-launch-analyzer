@@ -3,11 +3,24 @@ import type { AttendeeClass, AttendeeNodeRole } from "../types.js";
 import type { EtherscanService } from "./EtherscanService.js";
 import type { LaunchRepository } from "./LaunchRepository.js";
 
-// A wallet's first funder is an immutable property, so funding lookups are cached forever
-// in Mongo. Because launch bots are reused across many launches, the cache amortizes fast:
-// each wallet is investigated via Etherscan at most once, then served from cache everywhere.
+// A single incoming ETH funding edge: `from` topped up the wallet (via a normal or an
+// internal/contract transfer). Stored so the whole funding graph can be reconstructed.
+export interface FundingInflow {
+  from: string;
+  via: "external" | "internal";
+  txHash: string;
+  value: string;
+  timeStamp: number;
+}
+
+// Wallet funding is cached in Mongo. Because launch bots are reused across many launches,
+// the cache amortizes fast: each wallet is investigated via Etherscan at most once (2 API
+// requests), then served from cache everywhere. `funders` holds every distinct ETH source
+// (funding is continuous, not a single transfer); the legacy scalar fields mirror the
+// earliest funder for display and backward compatibility with pre-graph cached docs.
 export interface WalletFunding {
   address: string;
+  funders: FundingInflow[];
   fundingSource: string | null;
   fundingTxHash: string | null;
   firstFundedAt: string | null;
@@ -27,6 +40,8 @@ export interface ClassifiedBuyer {
   classification: AttendeeClass;
   fundingSource: string | null;
   fundingTxHash: string | null;
+  fundingVia: "external" | "internal" | null;
+  funderCount: number;
   clusterId: number | null;
   quoteRaw: bigint;
   tradeCount: number;
@@ -72,6 +87,14 @@ const PUBLIC_FUNDER_THRESHOLD = 75;
 const MIN_COORDINATED_CLUSTER = 3;
 // Cap the wallet graph to the top traders (by volume) plus their funders, for readability.
 const GRAPH_MAX_TRADERS = 60;
+// Upper bound on graph nodes so dense funder fan-outs stay legible.
+const GRAPH_MAX_NODES = 140;
+// Distinct funding sources kept per wallet (one Etherscan lookup yields all of them).
+const MAX_FUNDERS_PER_WALLET = 12;
+// How many funder hops to walk out from the core wallets (founder -> ... -> bot chains).
+// Each new wallet costs 2 Etherscan requests, so this is bounded by the lookup budget and
+// by the funding cache (re-walked hops are free once warm).
+const MAX_FUNDING_HOPS = 3;
 // Known public funders on Base whose shared use is meaningless as a sybil signal. The
 // out-degree heuristic catches the rest as the cache grows; extend this seed as needed.
 const SEED_PUBLIC_FUNDERS = new Set<string>([
@@ -121,38 +144,56 @@ export class WalletIntelService {
   }
 
   // Classify a launch's buyers against the creator's funding graph and split volume into
-  // insider (the creator's cluster — wash trading) vs external (real demand).
+  // insider (the creator's cluster — wash trading) vs external (real demand). Walks the full
+  // ETH funding graph: every wallet's distinct funders (normal + contract/internal), out to
+  // MAX_FUNDING_HOPS, so any path connecting a buyer to the founder marks it insider.
   async classify(creator: string, traders: TraderActivity[], opts: { maxNewLookups?: number } = {}): Promise<IntelResult> {
     const creatorKey = creator.toLowerCase();
-    const budget = opts.maxNewLookups ?? this.maxNewLookups;
+    let remaining = opts.maxNewLookups ?? this.maxNewLookups;
 
     // Resolve funding creator-first, then by descending volume so the most impactful
     // buyers are classified even when the lookup budget is exhausted.
     const ordered = [...traders].sort((a, b) => (b.quoteRaw > a.quoteRaw ? 1 : b.quoteRaw < a.quoteRaw ? -1 : 0));
     const coreAddresses = [creatorKey, ...ordered.map((t) => t.address).filter((a) => a !== creatorKey)];
-    const firstHop = await this.resolveFunding(coreAddresses, budget);
-    const funding = firstHop.map;
-    const resolvedCount = funding.size;
 
-    // Second hop: resolve the funders themselves so creator -> intermediary -> bot chains
-    // connect, with whatever budget remains.
-    const firstHopFunders = [...new Set([...funding.values()].map((f) => f.fundingSource).filter((f): f is string => !!f))];
-    const secondHop = await this.resolveFunding(firstHopFunders, Math.max(0, budget - firstHop.newLookups));
-    for (const [address, record] of secondHop.map) if (!funding.has(address)) funding.set(address, record);
+    // Walk funder hops outward from the core wallets. Each hop resolves the funders
+    // discovered by the previous one, within the remaining lookup budget; the funding cache
+    // makes already-seen wallets free. The funder fan-out shrinks each hop in practice.
+    const funding = new Map<string, WalletFunding>();
+    let frontier = [...new Set(coreAddresses)];
+    let coreResolved = 0;
+    // Each hop spends from the shared budget (core wallets first); once it's exhausted,
+    // deeper hops still extend the graph from cache hits at no API cost.
+    for (let hop = 0; hop < MAX_FUNDING_HOPS && frontier.length; hop++) {
+      const { map, newLookups } = await this.resolveFunding(frontier, Math.max(0, remaining));
+      remaining -= newLookups;
+      for (const [address, record] of map) if (!funding.has(address)) funding.set(address, record);
+      if (hop === 0) coreResolved = coreAddresses.filter((address) => funding.has(address)).length;
 
-    const creatorFundingSource = funding.get(creatorKey)?.fundingSource ?? null;
+      const next = new Set<string>();
+      for (const address of frontier) {
+        for (const inflow of this.fundersOf(funding.get(address))) {
+          if (!funding.has(inflow.from)) next.add(inflow.from);
+        }
+      }
+      frontier = [...next];
+    }
+
+    const creatorFunders = new Set(this.fundersOf(funding.get(creatorKey)).map((inflow) => inflow.from));
 
     // Out-degree of every funder we touched, to flag public dispersers (never the creator).
-    const allFunders = [...new Set([...funding.values()].map((f) => f.fundingSource).filter((f): f is string => !!f))];
+    const allFunders = [...new Set([...funding.values()].flatMap((record) => this.fundersOf(record).map((inflow) => inflow.from)))];
     const funderCounts = await this.repository.getFunderCounts(allFunders);
     const isPublic = (funder: string): boolean =>
       funder !== creatorKey && (SEED_PUBLIC_FUNDERS.has(funder) || (funderCounts.get(funder) ?? 0) >= PUBLIC_FUNDER_THRESHOLD);
 
-    // Union each wallet with its (non-public) funder; shared private funders thus merge.
+    // Union each wallet with every (non-public) funder it ever received ETH from, so wallets
+    // that share any private funder — directly or through a chain — merge into one cluster.
     const dsu = new DisjointSet();
     for (const [address, record] of funding) {
-      const funder = record.fundingSource;
-      if (funder && !isPublic(funder)) dsu.union(address, funder);
+      for (const inflow of this.fundersOf(record)) {
+        if (!isPublic(inflow.from)) dsu.union(address, inflow.from);
+      }
     }
     const creatorRoot = dsu.find(creatorKey);
 
@@ -160,27 +201,51 @@ export class WalletIntelService {
     let totalQuoteRaw = 0n;
     let insiderBuyerCount = 0;
     let externalBuyerCount = 0;
-    let complete = resolvedCount >= coreAddresses.length;
+    let complete = coreResolved >= coreAddresses.length;
 
     // First pass: classify each buyer.
     const classified: ClassifiedBuyer[] = ordered.map((trader) => {
       totalQuoteRaw += trader.quoteRaw;
       const record = funding.get(trader.address);
-      const fundingSource = record?.fundingSource ?? null;
-      const classification = this.classifyOne(trader.address, creatorKey, creatorFundingSource, fundingSource, dsu, creatorRoot, isPublic);
+      const funders = this.fundersOf(record);
+      const primary = funders[0] ?? null;
+      const classification = this.classifyOne(trader.address, creatorKey, creatorFunders, funders, dsu, creatorRoot, isPublic);
       if (!record) complete = false;
       if (classification === "external") externalBuyerCount += 1;
       else { insiderBuyerCount += 1; insiderQuoteRaw += trader.quoteRaw; }
-      return { address: trader.address, classification, fundingSource, fundingTxHash: record?.fundingTxHash ?? null, clusterId: null, quoteRaw: trader.quoteRaw, tradeCount: trader.tradeCount, firstTradeMs: trader.firstTradeMs };
+      return {
+        address: trader.address,
+        classification,
+        fundingSource: primary?.from ?? null,
+        fundingTxHash: primary?.txHash ?? null,
+        fundingVia: primary?.via ?? null,
+        funderCount: funders.length,
+        clusterId: null,
+        quoteRaw: trader.quoteRaw,
+        tradeCount: trader.tradeCount,
+        firstTradeMs: trader.firstTradeMs
+      };
     });
 
-    const clusters = this.buildClusters(classified, creatorFundingSource, isPublic);
+    const clusters = this.buildClusters(classified, funding, creatorFunders, isPublic);
     const graph = this.buildGraph(classified, funding, creatorKey, creatorRoot, dsu, isPublic);
+    const creatorFundingSource = [...creatorFunders][0] ?? null;
     return { creatorFundingSource, buyers: classified, clusters, graph, insiderQuoteRaw, totalQuoteRaw, insiderBuyerCount, externalBuyerCount, complete };
   }
 
-  // Build a funding-relationship graph: the top traders, the creator, and up to two hops of
-  // their private funders, with an edge from each wallet to the wallet that funded it.
+  // All funders of a wallet, tolerating legacy cached docs that predate the `funders` array
+  // (those carry only the single scalar fundingSource).
+  private fundersOf(record: WalletFunding | undefined): FundingInflow[] {
+    if (!record) return [];
+    if (record.funders?.length) return record.funders;
+    if (record.fundingSource) {
+      return [{ from: record.fundingSource, via: "external", txHash: record.fundingTxHash ?? "", value: "0", timeStamp: 0 }];
+    }
+    return [];
+  }
+
+  // Build a funding-relationship graph: the top traders, the creator, and several hops of
+  // their private funders, with an edge from each wallet to every wallet that funded it.
   private buildGraph(
     buyers: ClassifiedBuyer[],
     funding: Map<string, WalletFunding>,
@@ -189,23 +254,24 @@ export class WalletIntelService {
     dsu: DisjointSet,
     isPublic: (funder: string) => boolean
   ): IntelGraph {
-    const funderOf = (address: string): string | null => {
-      const funder = funding.get(address)?.fundingSource;
-      return funder && !isPublic(funder) ? funder : null;
-    };
+    const fundersOfAddr = (address: string): string[] =>
+      this.fundersOf(funding.get(address)).map((inflow) => inflow.from).filter((from) => !isPublic(from));
 
     const included = new Set<string>([creatorKey, ...buyers.slice(0, GRAPH_MAX_TRADERS).map((buyer) => buyer.address)]);
-    for (let hop = 0; hop < 2; hop++) {
+    for (let hop = 0; hop < MAX_FUNDING_HOPS && included.size < GRAPH_MAX_NODES; hop++) {
       for (const address of [...included]) {
-        const funder = funderOf(address);
-        if (funder) included.add(funder);
+        for (const funder of fundersOfAddr(address)) {
+          if (included.size >= GRAPH_MAX_NODES) break;
+          included.add(funder);
+        }
       }
     }
 
     const edges: { from: string; to: string }[] = [];
     for (const address of included) {
-      const funder = funderOf(address);
-      if (funder && included.has(funder)) edges.push({ from: address, to: funder });
+      for (const funder of fundersOfAddr(address)) {
+        if (included.has(funder)) edges.push({ from: address, to: funder });
+      }
     }
 
     const byAddress = new Map(buyers.map((buyer) => [buyer.address, buyer]));
@@ -226,22 +292,22 @@ export class WalletIntelService {
   private classifyOne(
     address: string,
     creatorKey: string,
-    creatorFundingSource: string | null,
-    fundingSource: string | null,
+    creatorFunders: Set<string>,
+    funders: FundingInflow[],
     dsu: DisjointSet,
     creatorRoot: string,
     isPublic: (funder: string) => boolean
   ): AttendeeClass {
     if (address === creatorKey) return "creator";
-    if (fundingSource === creatorKey) return "creator-funded";
-    if (fundingSource && creatorFundingSource && fundingSource === creatorFundingSource && !isPublic(fundingSource)) return "same-funder";
+    if (funders.some((inflow) => inflow.from === creatorKey)) return "creator-funded";
+    if (funders.some((inflow) => creatorFunders.has(inflow.from) && !isPublic(inflow.from))) return "same-funder";
     if (dsu.find(address) === creatorRoot) return "linked";
     return "external";
   }
 
   // Cluster 0 is always the creator's insider group; coordinated rings are groups of
-  // external buyers (>= MIN_COORDINATED_CLUSTER) that share one private funder.
-  private buildClusters(buyers: ClassifiedBuyer[], creatorFundingSource: string | null, isPublic: (funder: string) => boolean): IntelCluster[] {
+  // external buyers (>= MIN_COORDINATED_CLUSTER) that share any one private funder.
+  private buildClusters(buyers: ClassifiedBuyer[], funding: Map<string, WalletFunding>, creatorFunders: Set<string>, isPublic: (funder: string) => boolean): IntelCluster[] {
     const clusters: IntelCluster[] = [];
 
     const insiders = buyers.filter((b) => b.classification !== "external");
@@ -250,33 +316,39 @@ export class WalletIntelService {
       clusters.push({
         id: 0,
         kind: "creator-insider",
-        fundingSource: creatorFundingSource,
+        fundingSource: [...creatorFunders][0] ?? null,
         memberCount: insiders.length,
         quoteRaw: insiders.reduce((sum, b) => sum + b.quoteRaw, 0n)
       });
     }
 
+    // Group external buyers by every private funder they share, then keep the funders that
+    // tie together enough buyers. A buyer is assigned to the first (largest-priority) ring.
     const byFunder = new Map<string, ClassifiedBuyer[]>();
     for (const buyer of buyers) {
-      if (buyer.classification !== "external" || !buyer.fundingSource || isPublic(buyer.fundingSource)) continue;
-      const group = byFunder.get(buyer.fundingSource) ?? [];
-      group.push(buyer);
-      byFunder.set(buyer.fundingSource, group);
+      if (buyer.classification !== "external") continue;
+      for (const inflow of this.fundersOf(funding.get(buyer.address))) {
+        if (isPublic(inflow.from)) continue;
+        const group = byFunder.get(inflow.from) ?? [];
+        group.push(buyer);
+        byFunder.set(inflow.from, group);
+      }
     }
     let nextId = 1;
-    for (const [funder, group] of byFunder) {
-      if (group.length < MIN_COORDINATED_CLUSTER) continue;
+    for (const [funder, group] of [...byFunder.entries()].sort((a, b) => b[1].length - a[1].length)) {
+      const fresh = group.filter((buyer) => buyer.clusterId == null);
+      if (fresh.length < MIN_COORDINATED_CLUSTER) continue;
       const id = nextId++;
-      for (const buyer of group) buyer.clusterId = id;
-      clusters.push({ id, kind: "coordinated", fundingSource: funder, memberCount: group.length, quoteRaw: group.reduce((sum, b) => sum + b.quoteRaw, 0n) });
+      for (const buyer of fresh) buyer.clusterId = id;
+      clusters.push({ id, kind: "coordinated", fundingSource: funder, memberCount: fresh.length, quoteRaw: fresh.reduce((sum, b) => sum + b.quoteRaw, 0n) });
     }
 
     return clusters;
   }
 
   // Cache-first funding resolution. Up to `maxNew` uncached addresses are fetched from
-  // Etherscan (the rest are left unresolved for a later pass once the cache warms).
-  // Returns the resolved map plus the number of fresh Etherscan lookups performed.
+  // Etherscan (2 requests each; the rest are left for a later pass once the cache warms).
+  // Returns the resolved map plus the number of fresh wallet lookups performed.
   private async resolveFunding(addresses: string[], maxNew: number): Promise<{ map: Map<string, WalletFunding>; newLookups: number }> {
     const keys = [...new Set(addresses.map((a) => a.toLowerCase()))];
     if (!keys.length) return { map: new Map(), newLookups: 0 };
@@ -289,13 +361,15 @@ export class WalletIntelService {
     const fetched: WalletFunding[] = [];
     for (const address of toFetch) {
       try {
-        const transfer = await this.etherscan.getFirstIncomingTransfer(address);
+        const inflows = await this.etherscan.getIncomingTransfers(address, MAX_FUNDERS_PER_WALLET);
+        const primary = inflows[0];
         const record: WalletFunding = {
           address,
-          fundingSource: transfer ? transfer.from.toLowerCase() : null,
-          fundingTxHash: transfer ? transfer.hash : null,
-          firstFundedAt: transfer ? new Date(transfer.timeStamp * 1000).toISOString() : null,
-          fundingAmount: transfer ? `${Number(formatEther(transfer.value)).toFixed(4)} ETH` : null,
+          funders: inflows.map((inflow) => ({ from: inflow.from, via: inflow.via, txHash: inflow.hash, value: inflow.value, timeStamp: inflow.timeStamp })),
+          fundingSource: primary ? primary.from : null,
+          fundingTxHash: primary ? primary.hash : null,
+          firstFundedAt: primary ? new Date(primary.timeStamp * 1000).toISOString() : null,
+          fundingAmount: primary ? `${Number(formatEther(primary.value)).toFixed(4)} ETH` : null,
           fetchedAt: new Date().toISOString()
         };
         fetched.push(record);

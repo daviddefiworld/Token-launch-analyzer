@@ -377,7 +377,7 @@ export class LaunchAnalyzer {
       return { firstFundedAt: null, fundingSource: null, fundingAmount: null };
     }
     try {
-      const transfer = await this.etherscan.getFirstIncomingTransfer(address);
+      const [transfer] = await this.etherscan.getIncomingTransfers(address, 1);
       return transfer
         ? {
             firstFundedAt: new Date(transfer.timeStamp * 1000).toISOString(),

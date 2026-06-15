@@ -35,6 +35,9 @@ export interface IncomingTransfer {
   value: string;
   timeStamp: number;
   hash: string;
+  // "external" = a normal tx; "internal" = a contract-mediated value transfer (disperse
+  // contracts, CEX withdrawals, custom funders) that only appears in txlistinternal.
+  via: "external" | "internal";
 }
 
 interface EtherscanEnvelope {
@@ -132,22 +135,51 @@ export class EtherscanService {
     return logs;
   }
 
-  async getFirstIncomingTransfer(address: string): Promise<IncomingTransfer | null> {
-    const envelope = await this.request({
+  // Every distinct address that has sent ETH to `address`, across both normal and internal
+  // transactions, earliest first and capped at `maxFunders` distinct sources. Funding is
+  // continuous (a wallet is topped up many times from many places), so we keep them all —
+  // any one of them can tie a buyer to the founder's cluster. Costs exactly 2 API requests
+  // regardless of `maxFunders` (the offset only changes the response size, not the count).
+  async getIncomingTransfers(address: string, maxFunders = 12): Promise<IncomingTransfer[]> {
+    const lower = address.toLowerCase();
+    const params = (action: string) => ({
       module: "account",
-      action: "txlist",
+      action,
       address,
       startblock: "0",
       endblock: "99999999",
       page: "1",
-      offset: "100",
-      sort: "asc"
+      offset: "1000",
+      sort: "asc" as const
     });
-    const rows = Array.isArray(envelope.result) ? envelope.result as Array<Record<string, string>> : [];
-    const transfer = rows.find((tx) => tx.to?.toLowerCase() === address.toLowerCase() && tx.value !== "0");
-    return transfer
-      ? { from: transfer.from, value: transfer.value, timeStamp: Number(transfer.timeStamp), hash: transfer.hash }
-      : null;
+    const [normal, internal] = await Promise.all([
+      this.request(params("txlist")),
+      this.request(params("txlistinternal"))
+    ]);
+
+    const transfers: IncomingTransfer[] = [];
+    const collect = (envelope: EtherscanEnvelope, via: "external" | "internal") => {
+      const rows = Array.isArray(envelope.result) ? envelope.result as Array<Record<string, string>> : [];
+      for (const tx of rows) {
+        // Skip reverted internal calls, zero-value moves, and self-sends.
+        if (tx.isError === "1") continue;
+        if (!tx.from || !tx.value || tx.value === "0") continue;
+        if (tx.to?.toLowerCase() !== lower) continue;
+        if (tx.from.toLowerCase() === lower) continue;
+        transfers.push({ from: tx.from.toLowerCase(), value: tx.value, timeStamp: Number(tx.timeStamp), hash: tx.hash, via });
+      }
+    };
+    collect(normal, "external");
+    collect(internal, "internal");
+
+    // Earliest first, then keep one (the first) transfer per distinct funder.
+    transfers.sort((left, right) => left.timeStamp - right.timeStamp);
+    const byFunder = new Map<string, IncomingTransfer>();
+    for (const transfer of transfers) {
+      if (!byFunder.has(transfer.from)) byFunder.set(transfer.from, transfer);
+      if (byFunder.size >= maxFunders) break;
+    }
+    return [...byFunder.values()];
   }
 
   private async schedule(): Promise<void> {

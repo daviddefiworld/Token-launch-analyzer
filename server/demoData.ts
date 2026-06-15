@@ -297,6 +297,8 @@ export const buildDemoAttendeeReport = (launch: Launch): AttendeeReport => {
       classification,
       fundingSource: insider ? creatorFundingSource : `0x${(index + 0x5100).toString(16).padStart(40, "0")}`,
       fundingTxHash: `0x${(index + 0xf100).toString(16).padStart(64, "0")}`,
+      fundingVia: (index % 4 === 0 ? "internal" : "external") as "external" | "internal",
+      funderCount: insider ? 2 + (index % 3) : 1,
       clusterId: insider ? 0 : null,
       tradeCount: entry.tradeCount,
       volumeUsd: Math.round(entry.volumeUsd),

@@ -79,11 +79,24 @@ const tokenCreationSchema = new mongoose.Schema<TokenCreation>(
 );
 const TokenCreationModel = mongoose.models.TokenCreation || mongoose.model<TokenCreation>("TokenCreation", tokenCreationSchema);
 
-// Global, cross-launch funding cache. A wallet's first funder never changes, so once a bot
-// is investigated it is served from here for every future launch it appears in.
+// Global, cross-launch funding cache. Each wallet stores every distinct ETH source that
+// funded it (`funders`), so the whole funding graph is reconstructable; the scalar fields
+// mirror the earliest funder for display. Once a bot is investigated it is served from here
+// for every future launch it appears in.
+const fundingInflowSchema = new mongoose.Schema(
+  {
+    from: { type: String, required: true },
+    via: { type: String, default: "external" },
+    txHash: { type: String, default: null },
+    value: { type: String, default: null },
+    timeStamp: { type: Number, default: 0 }
+  },
+  { _id: false, versionKey: false }
+);
 const walletFundingSchema = new mongoose.Schema<WalletFunding>(
   {
     address: { type: String, required: true, unique: true },
+    funders: { type: [fundingInflowSchema], default: [] },
     fundingSource: { type: String, default: null, index: true },
     fundingTxHash: { type: String, default: null },
     firstFundedAt: { type: String, default: null },
@@ -92,6 +105,8 @@ const walletFundingSchema = new mongoose.Schema<WalletFunding>(
   },
   { versionKey: false }
 );
+// Multikey index for funder out-degree lookups over every funding edge.
+walletFundingSchema.index({ "funders.from": 1 });
 const WalletFundingModel = mongoose.models.WalletFunding || mongoose.model<WalletFunding>("WalletFunding", walletFundingSchema);
 
 // Per-launch attendee-intelligence report (the detailed per-buyer breakdown). Aggregates
@@ -413,13 +428,30 @@ export class LaunchRepository {
     })));
   }
 
-  // How many distinct cached wallets each funder has seeded — high counts mark public
-  // dispersers (CEX/bridge), which must not be treated as a sybil link.
+  // How many distinct cached wallets each funder has seeded across ALL its funding edges —
+  // high counts mark public dispersers (CEX/bridge/disperse contracts), which must not be
+  // treated as a sybil link. Falls back to the legacy scalar funder for pre-graph docs.
   async getFunderCounts(funders: string[]): Promise<Map<string, number>> {
     if (!funders.length) return new Map();
     const rows = await WalletFundingModel.aggregate<{ _id: string; count: number }>([
-      { $match: { fundingSource: { $in: funders } } },
-      { $group: { _id: "$fundingSource", count: { $sum: 1 } } }
+      // Index-usable pre-filter; the project/unwind below then counts only matching edges.
+      { $match: { $or: [{ "funders.from": { $in: funders } }, { fundingSource: { $in: funders } }] } },
+      {
+        $project: {
+          address: 1,
+          edges: {
+            $cond: [
+              { $gt: [{ $size: { $ifNull: ["$funders", []] } }, 0] },
+              "$funders.from",
+              { $cond: [{ $ifNull: ["$fundingSource", false] }, ["$fundingSource"], []] }
+            ]
+          }
+        }
+      },
+      { $unwind: "$edges" },
+      { $match: { edges: { $in: funders } } },
+      { $group: { _id: "$edges", wallets: { $addToSet: "$address" } } },
+      { $project: { count: { $size: "$wallets" } } }
     ]);
     return new Map(rows.map((row) => [row._id, row.count]));
   }

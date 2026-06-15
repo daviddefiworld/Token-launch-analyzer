@@ -207,6 +207,8 @@ a { color: #8effbd; }
 .attendee-row { min-height: 42px; }
 .funder-cell { display: flex; align-items: center; gap: 6px; }
 .funder-cell .tx-link { flex: none; }
+.funder-tag { flex: none; padding: 1px 5px; border-radius: 5px; font-size: 9px; font-weight: 800; letter-spacing: .02em; color: #9aa6b6; background: #1a2230; border: 1px solid #283242; }
+.funder-tag.contract { color: #ffc98a; background: #2a2114; border-color: #4a3a1f; }
 .attendee-badge { padding: 2px 8px; border-radius: 999px; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; }
 .attendee-badge.external { color: #7ff0aa; background: #16302a; }
 .attendee-badge.creator, .attendee-badge.creator-funded { color: #ff9b9b; background: #311a1f; }

@@ -52,6 +52,10 @@ export interface AttendeeBuyer {
   classification: AttendeeClass;
   fundingSource: string | null;
   fundingTxHash: string | null;
+  // "internal" => the wallet's earliest funding came through a contract (disperse/CEX/etc.).
+  fundingVia: "external" | "internal" | null;
+  // How many distinct ETH sources funded this wallet (funding is continuous, not one-shot).
+  funderCount: number;
   clusterId: number | null;
   tradeCount: number;
   volumeUsd: number | null;
