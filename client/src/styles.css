@@ -19,9 +19,11 @@ svg { width: 18px; height: 18px; }
 .status-dot.on { background: #79f2ad; box-shadow: 0 0 10px #79f2ad88; }
 .status-dot.off { background: #5a6573; box-shadow: none; }
 .indexer-name { flex: 1; color: #aab3c1; font-size: 11px; }
-.indexer-toggle { padding: 3px 10px; border-radius: 6px; border: 1px solid #2a3340; background: #141b26; font-size: 10px; font-weight: 800; }
-.indexer-toggle.off { color: #8effbd; border-color: #2e584d; background: #16302a; }
-.indexer-toggle.on { color: #ff9b9b; border-color: #4a2630; background: #2a161c; }
+/* Neutral at rest so neither state nags you to click; the accent only shows on hover.
+   Live/stopped status is conveyed by the .status-dot, not the button colour. */
+.indexer-toggle { padding: 3px 10px; border-radius: 6px; border: 1px solid #2a3340; background: #141b26; color: #97a1b1; font-size: 10px; font-weight: 800; transition: color .15s, border-color .15s, background .15s; }
+.indexer-toggle.off:hover:not(:disabled) { color: #8effbd; border-color: #2e584d; background: #16302a; }
+.indexer-toggle.on:hover:not(:disabled) { color: #ff9b9b; border-color: #4a2630; background: #2a161c; }
 .indexer-toggle:disabled { opacity: .5; cursor: not-allowed; }
 .brand-mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 11px; color: #081018; background: #8effbd; font-weight: 800; }
 .brand strong, .brand span { display: block; }
