@@ -44,6 +44,12 @@ If the process stops after launch upserts but before saving the checkpoint, the 
 
 `BASE_START_BLOCK` defines the earliest cached launch block. On startup, older cached launches are removed and an older checkpoint is fast-forwarded to this boundary. `BASE_LOG_CHUNK` defaults to `2000` for reliable `eth_getLogs` queries. After the initial sync, only new blocks are scanned.
 
+### Monitoring window & Etherscan budget
+
+The recurring Etherscan cost comes from the background **market-data** and **attendee-intel** refresh loops. To stay under the free tier (5 req/s, 100k/day), those loops only monitor launches whose LP was created within `MONITOR_WINDOW_HOURS` (default `24`) — fresh launches, where volume and buyer activity actually matter. Older launches keep their last-computed values and are no longer re-queried. Pool discovery (indexing) is forward-only and unaffected, and on-demand attendee analysis of a launch you open is never restricted.
+
+Each DEX has an independent indexer with a **Start/Stop** toggle in the sidebar (`POST /api/dex/:dex/start|stop`, state from `GET /api/indexers`). Stop the DEXes you don't care about to focus the shared Etherscan/RPC budget on one — e.g. run only Uniswap V3.
+
 ## DEX adapters (`server/skills`)
 
 All DEX-specific logic lives behind a `DexAdapter` (`server/skills/DexAdapter.ts`): the factory address, the pool-creation and swap event ABIs, how reserves are read, the pool-type taxonomy, and any DEX-specific quote tokens. One adapter folder per DEX:

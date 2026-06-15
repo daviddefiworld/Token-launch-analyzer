@@ -10,8 +10,19 @@ svg { width: 18px; height: 18px; }
 .sidebar { border-right: 1px solid #1d2431; background: rgba(8, 11, 18, .88); padding: 24px 16px; display: flex; flex-direction: column; }
 .brand, .selected-title, .topbar, .topbar-actions, .panel-heading, .wallet-address, .flow-summary { display: flex; align-items: center; }
 .brand { gap: 11px; margin: 0 8px 16px; }
-.dex-switcher { display: flex; flex-direction: column; gap: 6px; margin: 0 8px 28px; }
+.dex-switcher { display: flex; flex-direction: column; gap: 6px; margin: 0 8px 18px; }
 .dex-switcher .select-control { width: 100%; min-width: 0; padding: 9px 10px; font-size: 12px; }
+.indexer-controls { display: flex; flex-direction: column; gap: 7px; margin: 0 8px 26px; }
+.indexer-controls .eyebrow { margin-bottom: 1px; }
+.indexer-row { display: flex; align-items: center; gap: 7px; }
+.indexer-row .status-dot { margin-right: 0; }
+.status-dot.on { background: #79f2ad; box-shadow: 0 0 10px #79f2ad88; }
+.status-dot.off { background: #5a6573; box-shadow: none; }
+.indexer-name { flex: 1; color: #aab3c1; font-size: 11px; }
+.indexer-toggle { padding: 3px 10px; border-radius: 6px; border: 1px solid #2a3340; background: #141b26; font-size: 10px; font-weight: 800; }
+.indexer-toggle.off { color: #8effbd; border-color: #2e584d; background: #16302a; }
+.indexer-toggle.on { color: #ff9b9b; border-color: #4a2630; background: #2a161c; }
+.indexer-toggle:disabled { opacity: .5; cursor: not-allowed; }
 .brand-mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 11px; color: #081018; background: #8effbd; font-weight: 800; }
 .brand strong, .brand span { display: block; }
 .brand strong { font-size: 14px; }

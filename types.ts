@@ -198,11 +198,24 @@ export interface ApiStatus {
   factory: string;
   mongodb: boolean;
   indexer?: {
+    enabled: boolean;
     isRunning: boolean;
     indexedBlock: number | null;
     latestBlock: number | null;
     error: string | null;
   };
+}
+
+// Per-DEX indexer state for the start/stop controls.
+export interface IndexerState {
+  dex: string;
+  // Whether an indexer exists for this DEX (live mode + MongoDB).
+  available: boolean;
+  enabled: boolean;
+  isRunning: boolean;
+  indexedBlock: number | null;
+  latestBlock: number | null;
+  error: string | null;
 }
 
 export interface RpcMethodUsage {

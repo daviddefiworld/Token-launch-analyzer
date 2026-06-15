@@ -3,6 +3,9 @@ import type { LaunchRepository } from "./LaunchRepository.js";
 import type { MarketDataService } from "./MarketDataService.js";
 
 export interface LaunchIndexerStatus {
+  // Whether the periodic indexing loop is active (toggled by start()/stop()).
+  enabled: boolean;
+  // Whether a sync is executing right now.
   isRunning: boolean;
   indexedBlock: number | null;
   latestBlock: number | null;
@@ -20,6 +23,7 @@ interface LaunchIndexerOptions {
 
 export class LaunchIndexer {
   readonly status: LaunchIndexerStatus = {
+    enabled: false,
     isRunning: false,
     indexedBlock: null,
     latestBlock: null,
@@ -47,13 +51,17 @@ export class LaunchIndexer {
   }
 
   start(): void {
+    this.status.enabled = true;
     void this.sync();
     this.timer ??= setInterval(() => void this.sync(), this.intervalMs);
   }
 
+  // Stops the periodic loop (no new syncs scheduled). An in-flight sync finishes; this
+  // halts the DEX's recurring RPC/Etherscan usage so the budget can focus on other DEXes.
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.status.enabled = false;
   }
 
   sync(): Promise<void> {

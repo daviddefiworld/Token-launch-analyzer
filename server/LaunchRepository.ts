@@ -110,10 +110,20 @@ const AttendeeReportModel = mongoose.models.AttendeeReport || mongoose.model("At
 // DEX keeps its own indexing checkpoint, so the three DEXes share collections without their
 // data leaking across the ?dex= switcher. Token-creation times are chain-global and shared.
 export class LaunchRepository {
-  constructor(private readonly dexId: string, private readonly cleanupLegacy = false) {}
+  constructor(
+    private readonly dexId: string,
+    private readonly cleanupLegacy = false,
+    // Background refresh loops (market data + attendee intel) only touch launches created
+    // within this window, to cap recurring Etherscan usage (5 req/s, 100k/day free tier).
+    private readonly monitorWindowHours = 24
+  ) {}
 
   private get indexStateId(): string {
     return `${this.dexId}-pools`;
+  }
+
+  private get monitorCutoffIso(): string {
+    return new Date(Date.now() - this.monitorWindowHours * 3_600_000).toISOString();
   }
 
   async getPage({ cursor, limit, search, poolType, minLiquidityUsd, minVolumeUsd, createdWithinDays, sort }: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; createdWithinDays?: number; sort: LaunchSort }): Promise<LaunchPage> {
@@ -339,6 +349,7 @@ export class LaunchRepository {
     const staleBefore = new Date(Date.now() - 5 * 60_000).toISOString();
     return LaunchModel.find({
       dex: this.dexId,
+      createdAt: { $gte: this.monitorCutoffIso },
       $or: [
         { marketDataUpdatedAt: null },
         { marketDataUpdatedAt: { $exists: false } },
@@ -357,6 +368,7 @@ export class LaunchRepository {
     const staleBefore = new Date(Date.now() - 30 * 60_000).toISOString();
     return LaunchModel.find({
       dex: this.dexId,
+      createdAt: { $gte: this.monitorCutoffIso },
       volumeUsd: { $gt: 0 },
       $or: [
         { intelUpdatedAt: null },

@@ -16,6 +16,8 @@ import type { CreatorSort, DexInfo, LaunchSort } from "../types.js";
 const port = process.env.PORT || 4000;
 const startBlock = Number(process.env.BASE_START_BLOCK || 3200000);
 const logChunk = Math.min(Math.max(Number(process.env.BASE_LOG_CHUNK) || 2000, 1), 2000);
+// Background refresh loops only monitor launches newer than this, to cap Etherscan usage.
+const monitorWindowHours = Math.max(Number(process.env.MONITOR_WINDOW_HOURS) || 24, 1);
 const app = express();
 
 // Shared infrastructure: one RPC provider, one rate-limited Etherscan client, and one
@@ -50,6 +52,42 @@ app.use(express.json());
 
 app.get("/api/dexes", (_request, response) => {
   response.json(dexInfos);
+});
+
+// Live per-DEX indexer state, for the start/stop controls.
+app.get("/api/indexers", (_request, response) => {
+  response.json(adapters.map((adapter) => {
+    const indexer = indexers.get(adapter.id);
+    return {
+      dex: adapter.id,
+      available: Boolean(indexer),
+      enabled: indexer?.status.enabled ?? false,
+      isRunning: indexer?.status.isRunning ?? false,
+      indexedBlock: indexer?.status.indexedBlock ?? null,
+      latestBlock: indexer?.status.latestBlock ?? null,
+      error: indexer?.status.error ?? null
+    };
+  }));
+});
+
+app.post("/api/dex/:dex/start", (request, response) => {
+  const indexer = indexers.get(request.params.dex);
+  if (!indexer) {
+    response.status(404).json({ error: "No indexer for this DEX (requires live mode + MongoDB)" });
+    return;
+  }
+  indexer.start();
+  response.json({ dex: request.params.dex, enabled: true });
+});
+
+app.post("/api/dex/:dex/stop", (request, response) => {
+  const indexer = indexers.get(request.params.dex);
+  if (!indexer) {
+    response.status(404).json({ error: "No indexer for this DEX" });
+    return;
+  }
+  indexer.stop();
+  response.json({ dex: request.params.dex, enabled: false });
 });
 
 app.get("/api/status", (request, response) => {
@@ -201,7 +239,7 @@ async function start(): Promise<void> {
       for (const adapter of adapters) {
         const analyzer = analyzers.get(adapter.id)!;
         // The default adapter also clears any pre-multi-DEX cached launches on first run.
-        const repository = new LaunchRepository(adapter.id, adapter.id === DEFAULT_DEX_ID);
+        const repository = new LaunchRepository(adapter.id, adapter.id === DEFAULT_DEX_ID, monitorWindowHours);
         analyzer.repository = repository;
         if (etherscan && !walletIntel) walletIntel = new WalletIntelService(etherscan, repository);
         analyzer.walletIntel = walletIntel;

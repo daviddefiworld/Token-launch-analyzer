@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
-import type { ApiStatus, AttendeeBuyer, AttendeeGraph, AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
+import type { ApiStatus, AttendeeBuyer, AttendeeGraph, AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, IndexerState, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/$/, "");
 
@@ -77,6 +77,7 @@ const DEFAULT_DEX = "aerodrome";
 function App() {
   const [dex, setDex] = useState<string>(DEFAULT_DEX);
   const [availableDexes, setAvailableDexes] = useState<DexInfo[]>([]);
+  const [indexerStates, setIndexerStates] = useState<IndexerState[]>([]);
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [launches, setLaunches] = useState<Launch[]>([]);
   const [selected, setSelected] = useState<Launch | null>(null);
@@ -107,6 +108,25 @@ function App() {
       .then((dexes) => { if (dexes.length) setAvailableDexes(dexes); })
       .catch((requestError: Error) => setError(requestError.message));
   }, []);
+
+  const loadIndexers = useCallback(() => fetchJson<IndexerState[]>("/api/indexers")
+    .then(setIndexerStates)
+    .catch(() => undefined), []);
+
+  useEffect(() => {
+    void loadIndexers();
+    const timer = setInterval(() => void loadIndexers(), 5_000);
+    return () => clearInterval(timer);
+  }, [loadIndexers]);
+
+  const toggleIndexer = useCallback(async (targetDex: string, enable: boolean) => {
+    try {
+      await fetchJson<{ enabled: boolean }>(`/api/dex/${targetDex}/${enable ? "start" : "stop"}`, { method: "POST" });
+      await loadIndexers();
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
+  }, [loadIndexers]);
 
   useEffect(() => {
     const loadStatus = () => fetchJson<ApiStatus>(withDex("/api/status", dex))
@@ -278,6 +298,30 @@ function App() {
             ))}
           </select>
         </label>
+        {indexerStates.some((state) => state.available) && (
+          <div className="indexer-controls">
+            <span className="eyebrow">Indexers</span>
+            {availableDexes.map((item) => {
+              const state = indexerStates.find((entry) => entry.dex === item.id);
+              const enabled = state?.enabled ?? false;
+              return (
+                <div className="indexer-row" key={item.id}>
+                  <i className={`status-dot ${enabled ? "on" : "off"}`} />
+                  <span className="indexer-name">{item.label}</span>
+                  <button
+                    type="button"
+                    className={`indexer-toggle ${enabled ? "on" : "off"}`}
+                    disabled={!state?.available}
+                    onClick={() => void toggleIndexer(item.id, !enabled)}
+                    title={enabled ? "Stop indexing this DEX" : "Start indexing this DEX"}
+                  >
+                    {enabled ? "Stop" : "Start"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
         <nav>
           <button onClick={() => setPage("overview")} className={`nav-item ${page === "overview" ? "active" : ""}`}><GridIcon /> Overview</button>
           <button onClick={() => setPage("creators")} className={`nav-item ${page === "creators" ? "active" : ""}`}><UsersIcon /> Creators</button>
