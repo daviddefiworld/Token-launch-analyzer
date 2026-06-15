@@ -163,8 +163,8 @@ a { color: #8effbd; }
 .side.buy { color: #7ff0aa; background: #193529; }
 .side.sell { color: #ff8090; background: #391d27; }
 .tx-link { display: flex; }
-.empty-state { padding: 32px 17px; color: #808b9a; font-size: 12px; }
-.empty-state.compact { padding: 14px 0; }
+.empty-state { display: grid; place-items: center; min-height: 90px; padding: 26px 20px; color: #8a94a3; font-size: 12px; line-height: 1.5; text-align: center; background: #0f151d; border: 1px dashed #232e3b; border-radius: 10px; }
+.empty-state.compact { display: block; min-height: 0; padding: 14px 0; background: none; border: 0; }
 .error-banner { padding: 10px 14px; margin-bottom: 12px; border: 1px solid #793846; border-radius: 8px; color: #ff9cab; background: #321b23; font-size: 12px; }
 .rpc-panel { overflow: hidden; }
 .rpc-table .table-row { grid-template-columns: 2fr .65fr .65fr 1fr; padding: 0 17px; }
@@ -212,12 +212,12 @@ a { color: #8effbd; }
 .attendee-badge.creator, .attendee-badge.creator-funded { color: #ff9b9b; background: #311a1f; }
 .attendee-badge.same-funder { color: #f4c07a; background: #312718; }
 .attendee-badge.linked { color: #d6a8ff; background: #251a31; }
-.attendee-note { margin-top: 10px; }
+.attendee-note { margin-top: 10px; padding: 9px 12px; line-height: 1.5; border-left: 2px solid #2a3645; border-radius: 0 8px 8px 0; background: #0f151d; }
 .vol-cell strong { font-size: 11px; }
 
 .graph-section { margin-bottom: 16px; }
 .graph-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.graph-empty { margin: 0; padding: 14px 0; font-size: 11px; }
+.graph-empty { display: grid; place-items: center; min-height: 70px; margin: 0; padding: 18px 14px; font-size: 11px; line-height: 1.5; text-align: center; background: #0f151d; border: 1px dashed #232e3b; border-radius: 10px; }
 .wallet-graph { border: 1px solid #1e2735; border-radius: 10px; background: #0e141d; padding: 6px; }
 .wallet-graph-svg { display: block; width: 100%; height: auto; }
 .graph-edge { stroke: #2b3647; stroke-width: 1; }

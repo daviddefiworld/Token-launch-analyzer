@@ -218,9 +218,10 @@ export class MarketDataService {
     // The insider ratio is the robust quantity (numerator and denominator from the same
     // swap fetch — immune to time/price skew). Anchor real/insider USD to the launch's
     // authoritative market-data total so real <= total always holds; fall back to the
-    // intel-measured total only when no market-data volume exists yet.
+    // intel-measured total when market-data volume is missing OR zero. (A plain `??` would
+    // keep a literal 0 and wrongly zero out real volume that demonstrably happened on-chain.)
     const insiderRatio = result.totalQuoteRaw > 0n ? Number(result.insiderQuoteRaw) / Number(result.totalQuoteRaw) : 0;
-    const totalVolumeUsd = launch.volumeUsd ?? toUsd(result.totalQuoteRaw);
+    const totalVolumeUsd = launch.volumeUsd && launch.volumeUsd > 0 ? launch.volumeUsd : toUsd(result.totalQuoteRaw);
     const externalVolumeUsd = totalVolumeUsd != null ? totalVolumeUsd * (1 - insiderRatio) : null;
     const insiderVolumeUsd = totalVolumeUsd != null ? totalVolumeUsd * insiderRatio : null;
     const launchMs = new Date(launch.createdAt).getTime();
