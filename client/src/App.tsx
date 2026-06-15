@@ -10,6 +10,21 @@ const formatUsd = (value: number) =>
     maximumFractionDigits: 0
   }).format(value);
 
+// Compact USD (e.g. "$12.5K", "$1.2M") so a "real / total" pair fits on one line.
+const formatUsdCompact = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(value);
+
+// "real / total" volume, both amounts visible at a glance.
+const formatRealTotal = (real: number | null | undefined, total: number | null | undefined) => {
+  if (real == null) return total != null ? formatUsdCompact(total) : "—";
+  return `${formatUsdCompact(real)} / ${formatUsdCompact(total ?? real)}`;
+};
+
 const formatLaunchUsd = (value: number | null, marketDataUpdatedAt?: string | null) => {
   if (value == null) return marketDataUpdatedAt ? "No data" : "Pending";
   return formatUsd(value);
@@ -360,9 +375,8 @@ function App() {
 
         {error && <div className="error-banner">{error}</div>}
 
-        <section className="metrics overview-metrics">
-          <Metric label="24h real volume" value={formatUsd(launchStats?.dayRealVolumeUsd ?? 0)} hint="External · launched ≤ 24h" icon={<ChartIcon />} />
-          <Metric label="24h total volume" value={formatUsd(launchStats?.dayVolumeUsd ?? 0)} hint="All buyers · launched ≤ 24h" icon={<BarChartIcon />} />
+        <section className="metrics">
+          <Metric label="24h volume (real / total)" value={launchStats ? formatRealTotal(launchStats.dayRealVolumeUsd, launchStats.dayVolumeUsd) : "—"} hint="External / all · launched ≤ 24h" icon={<ChartIcon />} />
           <Metric label="Launches (24h)" value={launchStats?.dayLaunchCount ?? 0} hint="Pools launched today" icon={<RocketIcon />} />
           <Metric label={`Launches ≥ $${launchStats?.minVolumeUsd ?? 100}`} value={launchStats?.dayLaunchCountMinVolume ?? 0} hint="With real traction" icon={<PulseIcon />} />
           <Metric label="Active creators" value={launchStats?.dayActiveCreators ?? 0} hint="Unique · last 24h" icon={<UsersIcon />} />
@@ -407,7 +421,7 @@ function App() {
             </div>
             <div className="launch-table table-shell">
               <div className="table-row table-head">
-                <span>Pair</span><span>Creator</span><span>Liquidity</span><span>Real vol</span>
+                <span>Pair</span><span>Creator</span><span>Liquidity</span><span>Real / total vol</span>
               </div>
               {loading && <div className="empty-state">Indexing launches...</div>}
               {!loading && launches.map((launch) => (
@@ -420,14 +434,9 @@ function App() {
                   <span className="mono">{short(launch.creator)}</span>
                   <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
                   <span className="vol-cell">
-                    <strong>{formatLaunchUsd(launch.externalVolumeUsd ?? launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
-                    {launch.externalVolumeUsd != null && (
-                      <small className="vol-sub">
-                        of {formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)} total
-                        {launch.insiderRatio != null && launch.insiderRatio >= 0.05 && (
-                          <b className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}> · {Math.round(launch.insiderRatio * 100)}% insider</b>
-                        )}
-                      </small>
+                    <strong>{launch.externalVolumeUsd != null ? formatRealTotal(launch.externalVolumeUsd, launch.volumeUsd) : formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
+                    {launch.insiderRatio != null && launch.insiderRatio >= 0.05 && (
+                      <small className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}>{Math.round(launch.insiderRatio * 100)}% insider</small>
                     )}
                   </span>
                 </button>
@@ -857,10 +866,10 @@ function AttendeeIntelPanel({
       ) : (
         <>
           <section className="metrics attendee-metrics">
-            <Metric label="Real volume" value={report.externalVolumeUsd != null ? formatUsd(report.externalVolumeUsd) : "—"} hint="External, non-insider" icon={<ChartIcon />} />
-            <Metric label="Total volume" value={report.totalVolumeUsd != null ? formatUsd(report.totalVolumeUsd) : "—"} hint="All buyers, on-chain" icon={<BarChartIcon />} />
+            <Metric label="Volume (real / total)" value={formatRealTotal(report.externalVolumeUsd, report.totalVolumeUsd)} hint="Real excludes insider cluster" icon={<ChartIcon />} />
             <Metric label="Insider volume" value={report.insiderVolumeUsd != null ? formatUsd(report.insiderVolumeUsd) : "—"} hint={insiderPct != null ? `${insiderPct}% of total` : "Self-buys / sybils"} icon={<ShieldIcon />} danger={insiderPct != null && insiderPct >= 30} />
-            <Metric label="Buyers" value={report.buyerCount} hint={`${report.externalBuyerCount} external · ${report.insiderBuyerCount} insider`} icon={<UsersIcon />} />
+            <Metric label="External buyers" value={report.externalBuyerCount} hint="Independent funding" icon={<UsersIcon />} />
+            <Metric label="Insider buyers" value={report.insiderBuyerCount} hint="Creator's cluster" icon={<WalletIcon />} />
           </section>
 
           {insiderPct != null && (

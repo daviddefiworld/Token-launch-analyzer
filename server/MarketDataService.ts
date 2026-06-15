@@ -27,6 +27,10 @@ export interface MarketData {
   poolAddress: string;
   liquidityUsd: number | null;
   volumeUsd: number | null;
+  // Real/insider are always derived as total x (1 - insiderRatio) so real <= total holds
+  // even though the insider ratio is measured by a separate (intel) loop.
+  externalVolumeUsd?: number | null;
+  insiderVolumeUsd?: number | null;
   marketDataUpdatedAt: string;
 }
 
@@ -107,7 +111,17 @@ export class MarketDataService {
       this.computeVolume(launch, quoteDecimals, price, latestBlock)
     ]);
 
-    return { poolAddress: launch.poolAddress, liquidityUsd, volumeUsd, marketDataUpdatedAt: updatedAt };
+    // Re-derive real/insider from this fresh total and the last-known insider ratio (owned
+    // by the intel loop), so the two stay consistent and real never exceeds total.
+    const ratio = launch.insiderRatio ?? 0;
+    return {
+      poolAddress: launch.poolAddress,
+      liquidityUsd,
+      volumeUsd,
+      externalVolumeUsd: volumeUsd * (1 - ratio),
+      insiderVolumeUsd: volumeUsd * ratio,
+      marketDataUpdatedAt: updatedAt
+    };
   }
 
   // Known quote tokens carry their decimals statically; for any other quote we read
@@ -201,8 +215,14 @@ export class MarketDataService {
 
     const price = this.priceService ? await this.priceService.getQuotePriceUsd(launch.quoteAddress) : null;
     const toUsd = (raw: bigint): number | null => (price == null ? null : Number(formatUnits(raw, quoteDecimals)) * price);
-    const externalRaw = result.totalQuoteRaw - result.insiderQuoteRaw;
+    // The insider ratio is the robust quantity (numerator and denominator from the same
+    // swap fetch — immune to time/price skew). Anchor real/insider USD to the launch's
+    // authoritative market-data total so real <= total always holds; fall back to the
+    // intel-measured total only when no market-data volume exists yet.
     const insiderRatio = result.totalQuoteRaw > 0n ? Number(result.insiderQuoteRaw) / Number(result.totalQuoteRaw) : 0;
+    const totalVolumeUsd = launch.volumeUsd ?? toUsd(result.totalQuoteRaw);
+    const externalVolumeUsd = totalVolumeUsd != null ? totalVolumeUsd * (1 - insiderRatio) : null;
+    const insiderVolumeUsd = totalVolumeUsd != null ? totalVolumeUsd * insiderRatio : null;
     const launchMs = new Date(launch.createdAt).getTime();
     const now = new Date().toISOString();
 
@@ -244,9 +264,9 @@ export class MarketDataService {
       buyerCount: traders.length,
       insiderBuyerCount: result.insiderBuyerCount,
       externalBuyerCount: result.externalBuyerCount,
-      totalVolumeUsd: toUsd(result.totalQuoteRaw),
-      externalVolumeUsd: toUsd(externalRaw),
-      insiderVolumeUsd: toUsd(result.insiderQuoteRaw),
+      totalVolumeUsd,
+      externalVolumeUsd,
+      insiderVolumeUsd,
       insiderRatio,
       buyers,
       clusters,
@@ -254,8 +274,8 @@ export class MarketDataService {
       updatedAt: now
     };
     const intel: Partial<Launch> = {
-      externalVolumeUsd: toUsd(externalRaw),
-      insiderVolumeUsd: toUsd(result.insiderQuoteRaw),
+      externalVolumeUsd,
+      insiderVolumeUsd,
       insiderRatio,
       insiderBuyerCount: result.insiderBuyerCount,
       externalBuyerCount: result.externalBuyerCount,
