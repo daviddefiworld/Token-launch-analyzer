@@ -19,12 +19,21 @@ svg { width: 18px; height: 18px; }
 .status-dot.on { background: #79f2ad; box-shadow: 0 0 10px #79f2ad88; }
 .status-dot.off { background: #5a6573; box-shadow: none; }
 .indexer-name { flex: 1; color: #aab3c1; font-size: 11px; }
-/* Neutral at rest so neither state nags you to click; the accent only shows on hover.
-   Live/stopped status is conveyed by the .status-dot, not the button colour. */
-.indexer-toggle { padding: 3px 10px; border-radius: 6px; border: 1px solid #2a3340; background: #141b26; color: #97a1b1; font-size: 10px; font-weight: 800; transition: color .15s, border-color .15s, background .15s; }
+/* A clearly clickable button (solid fill + defined border) with a subtle accent hint of
+   its action, rather than a loud filled call-to-action. Live/stopped status is also shown
+   by the .status-dot. The accent deepens on hover. */
+.indexer-toggle { padding: 3px 10px; border-radius: 6px; border: 1px solid #3a4553; background: #1c2533; color: #cdd4de; font-size: 10px; font-weight: 800; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.indexer-toggle.off { color: #86e3ad; border-color: #335247; }
+.indexer-toggle.on { color: #e89aa0; border-color: #4a323a; }
 .indexer-toggle.off:hover:not(:disabled) { color: #8effbd; border-color: #2e584d; background: #16302a; }
 .indexer-toggle.on:hover:not(:disabled) { color: #ff9b9b; border-color: #4a2630; background: #2a161c; }
 .indexer-toggle:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Collapsible panel heading toggle (e.g. the early order-flow panel). */
+.collapse-toggle { display: flex; align-items: center; gap: 10px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.collapse-toggle .caret { display: grid; place-items: center; width: 18px; height: 18px; color: #687487; transform: rotate(-90deg); transition: transform .18s; }
+.collapse-toggle .caret.open { transform: rotate(0deg); }
+.collapse-toggle .caret svg { width: 16px; height: 16px; }
 .brand-mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 11px; color: #081018; background: #8effbd; font-weight: 800; }
 .brand strong, .brand span { display: block; }
 .brand strong { font-size: 14px; }

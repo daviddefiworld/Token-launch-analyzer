@@ -111,6 +111,7 @@ function App() {
   const [minVolumeUsd, setMinVolumeUsd] = useState("");
   const [createdWithinDays, setCreatedWithinDays] = useState("");
   const [tradeFilter, setTradeFilter] = useState<TradeSide | "all">("all");
+  const [flowOpen, setFlowOpen] = useState(true);
   const [page, setPage] = useState<"overview" | "creators" | "analytics" | "rpc">("overview");
   const [rpcUsage, setRpcUsage] = useState<RpcUsage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -484,11 +485,15 @@ function App() {
           </aside>
         </section>
 
-        <section className="flow-panel panel">
+        <section className={`flow-panel panel ${flowOpen ? "" : "collapsed"}`}>
           <div className="panel-heading">
-            <div><span className="eyebrow">Early order flow</span><h2>First 100 buyers & sellers</h2></div>
+            <button type="button" className="collapse-toggle" onClick={() => setFlowOpen((open) => !open)} aria-expanded={flowOpen} title={flowOpen ? "Collapse" : "Expand"}>
+              <span className={`caret ${flowOpen ? "open" : ""}`}><CaretIcon /></span>
+              <span><span className="eyebrow">Early order flow</span><h2>First 100 buyers & sellers</h2></span>
+            </button>
             <div className="flow-summary"><span><i className="buy-dot" /> {buyCount} buys</span><span><i className="sell-dot" /> {sellCount} sells</span></div>
           </div>
+          {flowOpen && <>
           <div className="toolbar flow-toolbar">
             <div className="filter-row">
               {(["all", "buy", "sell"] as const).map((item) => <button key={item} onClick={() => setTradeFilter(item)} className={tradeFilter === item ? "filter active" : "filter"}>{item}</button>)}
@@ -511,6 +516,7 @@ function App() {
               </div>
             ))}
           </div>
+          </>}
         </section>
 
         <AttendeeIntelPanel
@@ -1112,6 +1118,7 @@ const BarChartIcon = () => <Icon><path d="M5 19V9" /><path d="M10 19V5" /><path 
 const ShieldIcon = () => <Icon><path d="M12 3 20 6v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" /><path d="M12 8v4" /><path d="M12 16h.01" /></Icon>;
 const SearchIcon = () => <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></Icon>;
 const ArrowIcon = () => <Icon><path d="M7 17 17 7" /><path d="M8 7h9v9" /></Icon>;
+const CaretIcon = () => <Icon><path d="m6 9 6 6 6-6" /></Icon>;
 const RefreshIcon = () => <Icon><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></Icon>;
 
 export default App;

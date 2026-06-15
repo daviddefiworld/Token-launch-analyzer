@@ -143,6 +143,11 @@ export class LaunchAnalyzer {
     return this.#requireRepository().getCreatorsPage(options);
   }
 
+  async getLaunch(poolAddress: string): Promise<Launch | null> {
+    if (this.provider) return this.#requireRepository().getByPoolAddress(poolAddress);
+    return this.#demoLaunches().find((item) => item.poolAddress.toLowerCase() === poolAddress.toLowerCase()) ?? null;
+  }
+
   async getFirstTrades(poolAddress: string): Promise<Trade[]> {
     const launch = this.provider
       ? await this.#requireRepository().getByPoolAddress(poolAddress)

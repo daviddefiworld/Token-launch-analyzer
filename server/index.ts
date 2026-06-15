@@ -206,12 +206,25 @@ app.get("/api/launches/:poolAddress/attendees", async (request, response, next) 
 
 app.post("/api/launches/:poolAddress/attendees/analyze", async (request, response, next) => {
   try {
-    const indexer = indexers.get(resolveAnalyzer(request).dexId);
+    const analyzer = resolveAnalyzer(request);
+    const indexer = indexers.get(analyzer.dexId);
     if (!indexer) {
       response.status(503).json({ error: "Attendee analysis requires live indexing" });
       return;
     }
     const pool = request.params.poolAddress;
+    // Validate the cheap precondition up front so the UI gets a clear reason instead of an
+    // analysis that silently produces nothing (the swap classifier needs a known quote token
+    // to value trades). The heavy funding lookups still run in the background below.
+    const launch = await analyzer.getLaunch(pool);
+    if (!launch) {
+      response.status(404).json({ error: "Launch not found" });
+      return;
+    }
+    if (!launch.quoteAddress) {
+      response.status(422).json({ error: "This launch's quote token isn't recognized on-chain, so swap-level attendee analysis isn't available for it." });
+      return;
+    }
     // Runs in the background (funding lookups can take a while); the UI polls the GET.
     void indexer.analyzeLaunchNow(pool).catch((error) => {
       console.warn(`Attendee analysis failed for ${pool}: ${error instanceof Error ? error.message : error}`);
