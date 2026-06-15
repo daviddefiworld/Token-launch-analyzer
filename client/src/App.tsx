@@ -19,10 +19,14 @@ const formatUsdCompact = (value: number) =>
     maximumFractionDigits: 1
   }).format(value);
 
-// "real / total" volume, both amounts visible at a glance.
-const formatRealTotal = (real: number | null | undefined, total: number | null | undefined) => {
+// "real / total" volume, both amounts visible at a glance. With collapseEqual, a single
+// value is shown when real and total match (nothing was filtered out as insider volume).
+const formatRealTotal = (real: number | null | undefined, total: number | null | undefined, collapseEqual = false) => {
   if (real == null) return total != null ? formatUsdCompact(total) : "—";
-  return `${formatUsdCompact(real)} / ${formatUsdCompact(total ?? real)}`;
+  const realText = formatUsdCompact(real);
+  const totalText = formatUsdCompact(total ?? real);
+  if (collapseEqual && realText === totalText) return totalText;
+  return `${realText} / ${totalText}`;
 };
 
 const formatLaunchUsd = (value: number | null, marketDataUpdatedAt?: string | null) => {
@@ -434,7 +438,7 @@ function App() {
                   <span className="mono">{short(launch.creator)}</span>
                   <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
                   <span className="vol-cell">
-                    <strong>{launch.externalVolumeUsd != null ? formatRealTotal(launch.externalVolumeUsd, launch.volumeUsd) : formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
+                    <strong>{launch.externalVolumeUsd != null ? formatRealTotal(launch.externalVolumeUsd, launch.volumeUsd, true) : formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
                     {launch.insiderRatio != null && launch.insiderRatio >= 0.05 && (
                       <small className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}>{Math.round(launch.insiderRatio * 100)}% insider</small>
                     )}

@@ -50,18 +50,26 @@ export class LaunchIndexer {
     this.intervalMs = intervalMs;
   }
 
-  start(): void {
+  start(persist = true): void {
     this.status.enabled = true;
+    if (persist) void this.repository.setMonitorEnabled(true).catch(() => {});
     void this.sync();
     this.timer ??= setInterval(() => void this.sync(), this.intervalMs);
   }
 
   // Stops the periodic loop (no new syncs scheduled). An in-flight sync finishes; this
   // halts the DEX's recurring RPC/Etherscan usage so the budget can focus on other DEXes.
-  stop(): void {
+  stop(persist = true): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.status.enabled = false;
+    if (persist) void this.repository.setMonitorEnabled(false).catch(() => {});
+  }
+
+  // Restore the persisted on/off choice on boot. Starts the loop only if monitoring was
+  // left enabled; passes persist=false so reading the stored flag doesn't rewrite it.
+  async resume(): Promise<void> {
+    if (await this.repository.getMonitorEnabled()) this.start(false);
   }
 
   sync(): Promise<void> {

@@ -13,6 +13,12 @@ interface IndexState {
   version: number;
 }
 
+// Persisted per-DEX monitoring toggle, so the start/stop choice survives restarts.
+interface IndexerControl {
+  _id: string;
+  enabled: boolean;
+}
+
 const launchSchema = new mongoose.Schema<Launch>(
   {
     id: { type: String, required: true, unique: true },
@@ -53,8 +59,16 @@ const indexStateSchema = new mongoose.Schema<IndexState>(
   },
   { versionKey: false }
 );
+const indexerControlSchema = new mongoose.Schema<IndexerControl>(
+  {
+    _id: { type: String, required: true },
+    enabled: { type: Boolean, required: true }
+  },
+  { versionKey: false }
+);
 const LaunchModel = mongoose.models.Launch || mongoose.model<Launch>("Launch", launchSchema);
 const IndexStateModel = mongoose.models.IndexState || mongoose.model<IndexState>("IndexState", indexStateSchema);
+const IndexerControlModel = mongoose.models.IndexerControl || mongoose.model<IndexerControl>("IndexerControl", indexerControlSchema);
 const tokenCreationSchema = new mongoose.Schema<TokenCreation>(
   {
     address: { type: String, required: true, unique: true },
@@ -278,6 +292,21 @@ export class LaunchRepository {
 
   async getByPoolAddress(poolAddress: string): Promise<Launch | null> {
     return LaunchModel.findOne({ dex: this.dexId, poolAddress }).lean<Launch | null>();
+  }
+
+  // Persisted monitoring toggle. Absent doc (fresh DB) defaults to enabled, matching the
+  // historical behaviour where every live DEX started indexing on boot.
+  async getMonitorEnabled(defaultEnabled = true): Promise<boolean> {
+    const doc = await IndexerControlModel.findById(this.dexId).lean<IndexerControl | null>();
+    return doc?.enabled ?? defaultEnabled;
+  }
+
+  async setMonitorEnabled(enabled: boolean): Promise<void> {
+    await IndexerControlModel.updateOne(
+      { _id: this.dexId },
+      { $set: { enabled } },
+      { upsert: true }
+    );
   }
 
   async getIndexedBlock(defaultBlock: number): Promise<number> {

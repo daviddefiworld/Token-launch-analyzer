@@ -258,7 +258,7 @@ async function start(): Promise<void> {
   app.listen(port, () => {
     const mode = provider ? "live" : "demo";
     console.log(`Launch analyzer API listening on http://localhost:${port} (${mode} mode) — DEXes: ${adapters.map((adapter) => adapter.id).join(", ")}`);
-    for (const indexer of indexers.values()) indexer.start();
+    void Promise.all([...indexers.values()].map((indexer) => indexer.resume()));
   });
 }
 
