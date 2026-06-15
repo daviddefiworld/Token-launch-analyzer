@@ -83,11 +83,14 @@ export interface DexAdapter {
 export const WETH = "0x4200000000000000000000000000000000000006";
 export const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 export const USDT = "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2";
+// VIRTUAL (Virtuals Protocol) — a very common pair/quote token for Base launches.
+export const VIRTUAL = "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b";
 
 export const BASE_QUOTES: ReadonlyArray<QuoteToken> = [
   { address: WETH, symbol: "WETH", decimals: 18 },
   { address: USDC, symbol: "USDC", decimals: 6 },
-  { address: USDT, symbol: "USDT", decimals: 6 }
+  { address: USDT, symbol: "USDT", decimals: 6 },
+  { address: VIRTUAL, symbol: "VIRTUAL", decimals: 18 }
 ];
 
 // USD stablecoins quoted 1:1.

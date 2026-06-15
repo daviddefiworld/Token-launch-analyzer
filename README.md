@@ -113,7 +113,9 @@ router swaps but can be an aggregator/router for multi-hop trades.
 
 MongoDB stores launches in the `launches` collection (each carries a `dex` field) and the durable per-DEX checkpoints in the `indexstates` collection. Token creation times are chain-global and cached once in `tokencreations`; wallet funding sources are likewise chain-global and cached in `walletfundings`; per-launch attendee reports live in `attendeereports`.
 
-Liquidity and 24-hour volume are computed in USD from on-chain data via the Etherscan v2 API and cached in MongoDB. Liquidity is the pool's quote-token reserve valued at 2×; volume sums each swap's quote leg over the last 24h. The quote token is priced as `$1` for USDC/USDT, the live ETH price for WETH, and a most-liquid DexScreener pair price for anything else (e.g. AERO). Pools whose quote is none of these fall back to DexScreener pair aggregates. Each trade in the order-flow view carries its own USD value using the same pricing.
+Liquidity and 24-hour volume are computed in USD from on-chain data via the Etherscan v2 API and cached in MongoDB. Liquidity is the pool's quote-token reserve valued at 2×; volume sums each swap's quote leg over the last 24h. The quote token is priced as `$1` for USDC/USDT, the live ETH price for WETH, an authoritative CoinGecko Base feed for well-known pair tokens (currently **VIRTUAL**, the Virtuals Protocol token used as the quote for many launches), and a most-liquid DexScreener pair price for anything else (e.g. AERO). Pools whose quote is none of these fall back to DexScreener pair aggregates. Each trade in the order-flow view carries its own USD value using the same pricing.
+
+Recognized quote tokens live in `server/skills/DexAdapter.ts` (`BASE_QUOTES`, shared across DEXes, plus per-adapter extras like AERO); the CoinGecko-priced set is `COINGECKO_PRICED` in `server/PriceService.ts`. Adding another frequently-paired token is a one-line change in each.
 
 > Note: the 2× quote-reserve TVL estimate is exact for constant-product V2 pools but only a rough upper bound for Uniswap V3, where concentrated liquidity means the pool balance spans out-of-range positions.
 
