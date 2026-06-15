@@ -90,18 +90,16 @@ export class LaunchAnalyzer {
 
   async getLaunchStats(): Promise<LaunchStats> {
     if (!this.provider) {
+      // Demo data is dated in the past, so treat the whole demo set as "today".
       const launches = this.#demoLaunches();
-      const weekAgo = Date.now() - 7 * 86_400_000;
-      const dayAgo = Date.now() - 86_400_000;
-      const sumVolumeSince = (since: number) => launches
-        .filter((launch) => new Date(launch.createdAt).getTime() >= since)
-        .reduce((sum, launch) => sum + (launch.volumeUsd ?? 0), 0);
+      const minVolumeUsd = 100;
       return {
-        total: launches.length,
-        totalVolumeUsd: launches.reduce((sum, launch) => sum + (launch.volumeUsd ?? 0), 0),
-        weekVolumeUsd: sumVolumeSince(weekAgo),
-        dayVolumeUsd: sumVolumeSince(dayAgo),
-        repeatCreators: new Set(launches.filter((launch) => launches.filter((item) => item.creator === launch.creator).length > 1).map((launch) => launch.creator)).size,
+        dayVolumeUsd: launches.reduce((sum, launch) => sum + (launch.volumeUsd ?? 0), 0),
+        dayRealVolumeUsd: launches.reduce((sum, launch) => sum + (launch.externalVolumeUsd ?? 0), 0),
+        dayLaunchCount: launches.length,
+        dayLaunchCountMinVolume: launches.filter((launch) => (launch.volumeUsd ?? 0) >= minVolumeUsd).length,
+        dayActiveCreators: new Set(launches.map((launch) => launch.creator)).size,
+        minVolumeUsd
       };
     }
     return this.#requireRepository().getStats();

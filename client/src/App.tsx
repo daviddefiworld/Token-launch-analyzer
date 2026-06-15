@@ -360,11 +360,12 @@ function App() {
 
         {error && <div className="error-banner">{error}</div>}
 
-        <section className="metrics">
-          <Metric label="7d launch volume" value={formatUsd(launchStats?.weekVolumeUsd ?? 0)} hint="24h vol · launched ≤ 7d" icon={<ChartIcon />} />
-          <Metric label="24h launch volume" value={formatUsd(launchStats?.dayVolumeUsd ?? 0)} hint="24h vol · launched ≤ 24h" icon={<RocketIcon />} />
-          <Metric label="Total 24h volume" value={formatUsd(launchStats?.totalVolumeUsd ?? 0)} hint="All indexed launches" icon={<ChartIcon />} />
-          <Metric label="Repeat creators" value={launchStats?.repeatCreators ?? 0} hint="Observed wallets" icon={<WalletIcon />} />
+        <section className="metrics overview-metrics">
+          <Metric label="24h real volume" value={formatUsd(launchStats?.dayRealVolumeUsd ?? 0)} hint="External · launched ≤ 24h" icon={<ChartIcon />} />
+          <Metric label="24h total volume" value={formatUsd(launchStats?.dayVolumeUsd ?? 0)} hint="All buyers · launched ≤ 24h" icon={<BarChartIcon />} />
+          <Metric label="Launches (24h)" value={launchStats?.dayLaunchCount ?? 0} hint="Pools launched today" icon={<RocketIcon />} />
+          <Metric label={`Launches ≥ $${launchStats?.minVolumeUsd ?? 100}`} value={launchStats?.dayLaunchCountMinVolume ?? 0} hint="With real traction" icon={<PulseIcon />} />
+          <Metric label="Active creators" value={launchStats?.dayActiveCreators ?? 0} hint="Unique · last 24h" icon={<UsersIcon />} />
         </section>
 
         <section className="analyst-grid">

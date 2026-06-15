@@ -4,6 +4,8 @@ import type { MarketData } from "./MarketDataService.js";
 import type { WalletFunding } from "./WalletIntelService.js";
 
 const INDEX_VERSION = 6;
+// A launch counts as having "real traction" once its 24h volume clears this threshold.
+const STATS_MIN_VOLUME_USD = 100;
 
 interface IndexState {
   _id: string;
@@ -240,57 +242,38 @@ export class LaunchRepository {
     return { days, points: this.fillDailyPoints(days, aggregated) };
   }
 
+  // Headline "today" metrics over pools launched in the last 24h (per DEX).
   async getStats(): Promise<LaunchStats> {
-    const now = Date.now();
-    const weekAgoIso = new Date(now - 7 * 86_400_000).toISOString();
-    const dayAgoIso = new Date(now - 86_400_000).toISOString();
+    const dayAgoIso = new Date(Date.now() - 86_400_000).toISOString();
 
-    const [summary] = await LaunchModel.aggregate<LaunchStats>([
-      { $match: { dex: this.dexId } },
+    const [summary] = await LaunchModel.aggregate<Omit<LaunchStats, "minVolumeUsd">>([
+      { $match: { dex: this.dexId, createdAt: { $gte: dayAgoIso } } },
       {
         $group: {
           _id: null,
-          total: { $sum: 1 },
-          totalVolumeUsd: { $sum: { $ifNull: ["$volumeUsd", 0] } },
-          // 24h volume summed over pools launched within each recent window.
-          weekVolumeUsd: { $sum: { $cond: [{ $gte: ["$createdAt", weekAgoIso] }, { $ifNull: ["$volumeUsd", 0] }, 0] } },
-          dayVolumeUsd: { $sum: { $cond: [{ $gte: ["$createdAt", dayAgoIso] }, { $ifNull: ["$volumeUsd", 0] }, 0] } },
-          creators: { $push: "$creator" }
+          dayLaunchCount: { $sum: 1 },
+          dayVolumeUsd: { $sum: { $ifNull: ["$volumeUsd", 0] } },
+          dayRealVolumeUsd: { $sum: { $ifNull: ["$externalVolumeUsd", 0] } },
+          dayLaunchCountMinVolume: { $sum: { $cond: [{ $gte: [{ $ifNull: ["$volumeUsd", 0] }, STATS_MIN_VOLUME_USD] }, 1, 0] } },
+          creators: { $addToSet: "$creator" }
         }
       },
       {
         $project: {
           _id: 0,
-          total: 1,
-          totalVolumeUsd: 1,
-          weekVolumeUsd: 1,
           dayVolumeUsd: 1,
-          repeatCreators: {
-            $size: {
-              $filter: {
-                input: { $setUnion: ["$creators", []] },
-                as: "creator",
-                cond: {
-                  $gt: [
-                    {
-                      $size: {
-                        $filter: {
-                          input: "$creators",
-                          as: "candidate",
-                          cond: { $eq: ["$$candidate", "$$creator"] }
-                        }
-                      }
-                    },
-                    1
-                  ]
-                }
-              }
-            }
-          }
+          dayRealVolumeUsd: 1,
+          dayLaunchCount: 1,
+          dayLaunchCountMinVolume: 1,
+          dayActiveCreators: { $size: "$creators" }
         }
       }
     ]);
-    return summary ?? { total: 0, totalVolumeUsd: 0, weekVolumeUsd: 0, dayVolumeUsd: 0, repeatCreators: 0 };
+
+    return {
+      ...(summary ?? { dayVolumeUsd: 0, dayRealVolumeUsd: 0, dayLaunchCount: 0, dayLaunchCountMinVolume: 0, dayActiveCreators: 0 }),
+      minVolumeUsd: STATS_MIN_VOLUME_USD
+    };
   }
 
   async getByPoolAddress(poolAddress: string): Promise<Launch | null> {
