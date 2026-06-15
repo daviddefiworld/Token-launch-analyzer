@@ -257,7 +257,7 @@ async function start(): Promise<void> {
         if (etherscan && !walletIntel) walletIntel = new WalletIntelService(etherscan, repository);
         analyzer.walletIntel = walletIntel;
         if (analyzer.mode === "live") {
-          const marketDataService = new MarketDataService(adapter, etherscan, priceService, analyzer.provider, walletIntel);
+          const marketDataService = new MarketDataService(adapter, etherscan, priceService, analyzer.provider, walletIntel, repository);
           indexers.set(adapter.id, new LaunchIndexer({ analyzer, repository, marketDataService, startBlock, blockChunk: logChunk }));
         }
       }

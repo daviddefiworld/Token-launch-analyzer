@@ -5,6 +5,7 @@ import type { LaunchRepository } from "./LaunchRepository.js";
 import type { EtherscanService } from "./EtherscanService.js";
 import type { PriceService } from "./PriceService.js";
 import type { RpcMetricsProvider } from "./RpcMetricsProvider.js";
+import { resolveTxTraders } from "./txTraders.js";
 import type { WalletIntelService } from "./WalletIntelService.js";
 import { getQuoteToken, isKnownQuote, isQuoteToken0, type DexAdapter } from "./skills/DexAdapter.js";
 
@@ -176,14 +177,17 @@ export class LaunchAnalyzer {
       // We only ever want the first 100 trades, so hitting the cap here is by design.
       warnOnCap: false
     });
-    return logs.slice(0, 100).map((log, index) => this.#buildTrade({
+    const page = logs.slice(0, 100);
+    const traderByTx = await resolveTxTraders(page.map((log) => log.transactionHash), this.repository, this.provider);
+    return page.map((log, index) => this.#buildTrade({
       topics: log.topics,
       data: log.data,
       txHash: log.transactionHash,
       logIndex: log.logIndex,
       timestampMs: log.timeStamp * 1000,
       rank: index + 1,
-      quote
+      quote,
+      trader: traderByTx.get(log.transactionHash.toLowerCase())
     }));
   }
 
@@ -204,6 +208,7 @@ export class LaunchAnalyzer {
     await Promise.all([...new Set(logs.map((log) => log.blockNumber))].map(async (blockNumber) => {
       blocks.set(blockNumber, await this.#getBlock(blockNumber));
     }));
+    const traderByTx = await resolveTxTraders(logs.map((log) => log.transactionHash), this.repository, this.provider);
     return logs.map((log, index) => this.#buildTrade({
       topics: log.topics as string[],
       data: log.data,
@@ -211,7 +216,8 @@ export class LaunchAnalyzer {
       logIndex: log.index,
       timestampMs: Number(blocks.get(log.blockNumber)!.timestamp) * 1000,
       rank: index + 1,
-      quote
+      quote,
+      trader: traderByTx.get(log.transactionHash.toLowerCase())
     }));
   }
 
@@ -239,14 +245,15 @@ export class LaunchAnalyzer {
     return { quoteIsToken0, quoteDecimals, quotePriceUsd };
   }
 
-  #buildTrade(input: { topics: string[]; data: string; txHash: string; logIndex: number; timestampMs: number; rank: number; quote: TradeQuote }): Trade {
+  #buildTrade(input: { topics: string[]; data: string; txHash: string; logIndex: number; timestampMs: number; rank: number; quote: TradeQuote; trader?: string }): Trade {
     const parsed = this.adapter.parseSwap({ topics: input.topics, data: input.data, quoteIsToken0: input.quote.quoteIsToken0 });
     const quoteAmount = parsed ? formatUnits(parsed.quoteAmountRaw, input.quote.quoteDecimals) : "0";
     return {
       id: `${input.txHash}-${input.logIndex}`,
       rank: input.rank,
       side: parsed?.side ?? "buy",
-      trader: parsed?.trader ?? "unknown",
+      // The real buyer is the tx signer; fall back to the swap event recipient.
+      trader: input.trader ?? parsed?.trader ?? "unknown",
       amountUsd: parsed && input.quote.quotePriceUsd != null ? Number(quoteAmount) * input.quote.quotePriceUsd : null,
       quoteAmount,
       tokenAmount: null,

@@ -79,6 +79,21 @@ const tokenCreationSchema = new mongoose.Schema<TokenCreation>(
 );
 const TokenCreationModel = mongoose.models.TokenCreation || mongoose.model<TokenCreation>("TokenCreation", tokenCreationSchema);
 
+// Immutable cache of tx hash -> signing EOA, so the "real trader behind the router" lookup
+// is paid once and reused across re-analyses and the first-trades view.
+interface TxSenderState {
+  _id: string;
+  from: string;
+}
+const txSenderSchema = new mongoose.Schema<TxSenderState>(
+  {
+    _id: { type: String, required: true },
+    from: { type: String, required: true }
+  },
+  { versionKey: false }
+);
+const TxSenderModel = mongoose.models.TxSender || mongoose.model<TxSenderState>("TxSender", txSenderSchema);
+
 // Global, cross-launch funding cache. Each wallet stores every distinct ETH source that
 // funded it (`funders`), so the whole funding graph is reconstructable; the scalar fields
 // mirror the earliest funder for display. Once a bot is investigated it is served from here
@@ -454,6 +469,20 @@ export class LaunchRepository {
       { $project: { count: { $size: "$wallets" } } }
     ]);
     return new Map(rows.map((row) => [row._id, row.count]));
+  }
+
+  // Real-trader (tx signer) cache. Hash -> signing EOA never changes, so it is cached forever.
+  async getTxSenders(hashes: string[]): Promise<Map<string, string>> {
+    if (!hashes.length) return new Map();
+    const rows = await TxSenderModel.find({ _id: { $in: hashes } }).lean<TxSenderState[]>();
+    return new Map(rows.map((row) => [row._id, row.from]));
+  }
+
+  async saveTxSenders(records: { hash: string; from: string }[]): Promise<void> {
+    if (!records.length) return;
+    await TxSenderModel.bulkWrite(records.map((record) => ({
+      updateOne: { filter: { _id: record.hash }, update: { $set: { from: record.from } }, upsert: true }
+    })));
   }
 
   async getAttendeeReport(poolAddress: string): Promise<AttendeeReport | null> {

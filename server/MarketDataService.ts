@@ -1,7 +1,10 @@
-import { Contract, formatUnits, type ContractRunner } from "ethers";
+import { Contract, formatUnits } from "ethers";
 import type { AttendeeBuyer, AttendeeReport, Launch } from "../types.js";
 import type { EtherscanService } from "./EtherscanService.js";
+import type { LaunchRepository } from "./LaunchRepository.js";
 import type { PriceService } from "./PriceService.js";
+import type { RpcMetricsProvider } from "./RpcMetricsProvider.js";
+import { resolveTxTraders } from "./txTraders.js";
 import type { TraderActivity, WalletIntelService } from "./WalletIntelService.js";
 import { getQuoteToken, isQuoteToken0, type DexAdapter } from "./skills/DexAdapter.js";
 
@@ -51,8 +54,9 @@ export class MarketDataService {
     private readonly adapter: DexAdapter,
     private readonly etherscan: EtherscanService | null = null,
     private readonly priceService: PriceService | null = null,
-    private readonly provider: ContractRunner | null = null,
-    private readonly walletIntel: WalletIntelService | null = null
+    private readonly provider: RpcMetricsProvider | null = null,
+    private readonly walletIntel: WalletIntelService | null = null,
+    private readonly repository: LaunchRepository | null = null
   ) {
     this.swapTopic = adapter.poolInterface.getEvent(adapter.swapEventName)!.topicHash;
   }
@@ -195,13 +199,18 @@ export class MarketDataService {
       toBlock: latestBlock
     });
 
-    // Aggregate swaps by trader (the swap recipient EOA).
+    // Attribute each swap to the EOA that signed its transaction (the real buyer) rather
+    // than the swap event's `to`, which for router/aggregator swaps is the router contract.
+    // Falls back to the event recipient when the tx signer can't be resolved.
+    const traderByTx = await resolveTxTraders(logs.map((log) => log.transactionHash), this.repository, this.provider);
     const quoteIsToken0 = isQuoteToken0(launch.quoteAddress, launch.tokenAddress);
     const byTrader = new Map<string, { quoteRaw: bigint; tradeCount: number; firstTradeMs: number | null }>();
     for (const log of logs) {
       const swap = this.adapter.parseSwap({ topics: log.topics, data: log.data, quoteIsToken0 });
-      if (!swap || !swap.trader) continue;
-      const key = swap.trader.toLowerCase();
+      if (!swap) continue;
+      const trader = traderByTx.get(log.transactionHash.toLowerCase()) ?? swap.trader;
+      if (!trader) continue;
+      const key = trader.toLowerCase();
       const entry = byTrader.get(key) ?? { quoteRaw: 0n, tradeCount: 0, firstTradeMs: null };
       entry.quoteRaw += swap.quoteAmountRaw;
       entry.tradeCount += 1;
