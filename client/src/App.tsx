@@ -380,8 +380,8 @@ function App() {
         {error && <div className="error-banner">{error}</div>}
 
         <section className="metrics">
-          <Metric label="24h volume (real / total)" value={launchStats ? formatRealTotal(launchStats.dayRealVolumeUsd, launchStats.dayVolumeUsd) : "—"} hint="External / all · launched ≤ 24h" icon={<ChartIcon />} />
           <Metric label="Launches (24h)" value={launchStats?.dayLaunchCount ?? 0} hint="Pools launched today" icon={<RocketIcon />} />
+          <Metric label="24h real volume" value={launchStats ? formatUsdCompact(launchStats.dayRealVolumeUsd) : "—"} hint="External · launched ≤ 24h" icon={<ChartIcon />} />
           <Metric label={`Launches ≥ $${launchStats?.minVolumeUsd ?? 100}`} value={launchStats?.dayLaunchCountMinVolume ?? 0} hint="With real traction" icon={<PulseIcon />} />
           <Metric label="Active creators" value={launchStats?.dayActiveCreators ?? 0} hint="Unique · last 24h" icon={<UsersIcon />} />
         </section>
