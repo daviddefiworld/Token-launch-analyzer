@@ -186,6 +186,12 @@ a { color: #8effbd; }
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart-grid-line { stroke: #1f2836; stroke-width: 1; }
 .chart-label { fill: #687487; font-size: 9px; font-family: "DM Mono", monospace; }
+/* 24h volume real/fake split in the overview metric card */
+.vol-split { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.vol-real { color: #8effbd; }
+.vol-sep { color: #586273; font-weight: 600; }
+.vol-fake { color: #ff8090; }
+
 /* Real-volume column + attendee intelligence */
 .vol-cell { display: flex; flex-direction: column; gap: 2px; }
 .insider-tag { color: #f0b67a; font-size: 9px; font-weight: 800; }

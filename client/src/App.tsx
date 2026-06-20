@@ -301,6 +301,11 @@ function App() {
   const currentDex = availableDexes.find((item) => item.id === dex);
   const dexLabel = currentDex?.label ?? "DEX";
   const poolTypeOptions = currentDex?.poolTypeOptions ?? [];
+  // 24h volume split: real (external) vs fake (insider/sybil = total − real).
+  const dayTotalVol = launchStats?.dayVolumeUsd ?? 0;
+  const dayRealVol = launchStats?.dayRealVolumeUsd ?? 0;
+  const dayFakeVol = Math.max(0, dayTotalVol - dayRealVol);
+  const dayFakePct = dayTotalVol > 0 ? Math.round((dayFakeVol / dayTotalVol) * 100) : 0;
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -387,7 +392,15 @@ function App() {
 
         <section className="metrics">
           <Metric label="Launches (24h)" value={launchStats?.dayLaunchCount ?? 0} hint="Pools launched today" icon={<RocketIcon />} />
-          <Metric label="24h real volume" value={launchStats ? formatUsdCompact(launchStats.dayRealVolumeUsd) : "—"} hint="External · launched ≤ 24h" icon={<ChartIcon />} />
+          <Metric
+            label="24h volume (real / fake)"
+            value={launchStats
+              ? <span className="vol-split"><span className="vol-real">{formatUsdCompact(dayRealVol)}</span><span className="vol-sep">/</span><span className="vol-fake">{formatUsdCompact(dayFakeVol)}</span></span>
+              : "—"}
+            hint={launchStats ? `${dayFakePct}% sybil · ${formatUsdCompact(dayTotalVol)} total` : "External vs insider · ≤ 24h"}
+            icon={<ChartIcon />}
+            danger={dayFakePct >= 50}
+          />
           <Metric label={`Launches ≥ $${launchStats?.minVolumeUsd ?? 100}`} value={launchStats?.dayLaunchCountMinVolume ?? 0} hint="With real traction" icon={<PulseIcon />} />
           <Metric label="Active creators" value={launchStats?.dayActiveCreators ?? 0} hint="Unique · last 24h" icon={<UsersIcon />} />
         </section>
@@ -1382,7 +1395,7 @@ function RpcUsagePage({ usage }: { usage: RpcUsage | null }) {
     </section></>;
 }
 
-function Metric({ label, value, delta, hint, icon, danger }: { label: string; value: string | number; delta?: string; hint?: string; icon: ReactNode; danger?: boolean }) {
+function Metric({ label, value, delta, hint, icon, danger }: { label: string; value: ReactNode; delta?: string; hint?: string; icon: ReactNode; danger?: boolean }) {
   return <article className="metric-card panel"><div className={`metric-icon ${danger ? "danger" : ""}`}>{icon}</div><div><span>{label}</span><strong>{value}</strong><small className={danger ? "danger-text" : ""}>{delta || hint}</small></div></article>;
 }
 
