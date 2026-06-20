@@ -369,9 +369,9 @@ export class LaunchRepository {
           dayLaunchCount: { $sum: 1 },
           dayVolumeUsd: { $sum: { $ifNull: ["$volumeUsd", 0] } },
           dayRealVolumeUsd: { $sum: { $ifNull: ["$externalVolumeUsd", 0] } },
-          // Volume of pools whose attendee intel hasn't run yet (externalVolumeUsd still null),
+          // Volume of pools whose attendee intel hasn't run yet (intelUpdatedAt still null),
           // so it can't yet be split into real vs fake.
-          dayAnalyzingVolumeUsd: { $sum: { $cond: [{ $eq: [{ $ifNull: ["$externalVolumeUsd", null] }, null] }, { $ifNull: ["$volumeUsd", 0] }, 0] } },
+          dayAnalyzingVolumeUsd: { $sum: { $cond: [{ $eq: [{ $ifNull: ["$intelUpdatedAt", null] }, null] }, { $ifNull: ["$volumeUsd", 0] }, 0] } },
           dayLaunchCountMinVolume: { $sum: { $cond: [{ $gte: [{ $ifNull: ["$volumeUsd", 0] }, STATS_MIN_VOLUME_USD] }, 1, 0] } },
           creators: { $addToSet: "$creator" }
         }

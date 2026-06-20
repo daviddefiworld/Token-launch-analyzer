@@ -356,8 +356,8 @@ function App() {
   const currentDex = availableDexes.find((item) => item.id === dex);
   const dexLabel = currentDex?.label ?? "DEX";
   const poolTypeOptions = currentDex?.poolTypeOptions ?? [];
-  // 24h volume split: real (external) / fake (insider/sybil) / analyzing (not yet analyzed,
-  // so its real-vs-fake split is still unknown). fake = total − real − analyzing.
+  // 24h volume split: real (external) / fake (insider/sybil) / analyzing (attendee intel
+  // hasn't run yet, so its real-vs-fake split is still unknown). fake = total − real − analyzing.
   const dayTotalVol = launchStats?.dayVolumeUsd ?? 0;
   const dayRealVol = launchStats?.dayRealVolumeUsd ?? 0;
   const dayAnalyzingVol = launchStats?.dayAnalyzingVolumeUsd ?? 0;
@@ -534,7 +534,7 @@ function App() {
                   <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
                   <span className="vol-cell">
                     <strong>{launch.externalVolumeUsd != null ? formatRealTotal(launch.externalVolumeUsd, launch.volumeUsd, true) : formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
-                    {launch.externalVolumeUsd == null ? (
+                    {launch.intelUpdatedAt == null ? (
                       <small className="pending-tag">Not analyzed</small>
                     ) : launch.insiderRatio != null && launch.insiderRatio >= 0.05 ? (
                       <small className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}>{Math.round(launch.insiderRatio * 100)}% insider</small>
