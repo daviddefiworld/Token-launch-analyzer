@@ -121,7 +121,7 @@ export class LaunchAnalyzer {
         dayRealVolumeUsd: launches.reduce((sum, launch) => sum + (launch.intelUpdatedAt != null ? launch.externalVolumeUsd ?? 0 : 0), 0),
         dayAnalyzingVolumeUsd: launches.reduce((sum, launch) => sum + (launch.intelUpdatedAt == null ? launch.volumeUsd ?? 0 : 0), 0),
         dayLaunchCount: launches.length,
-        dayLaunchCountMinVolume: launches.filter((launch) => (launch.volumeUsd ?? 0) >= minVolumeUsd).length,
+        dayLaunchCountMinVolume: launches.filter((launch) => launch.intelUpdatedAt != null && (launch.externalVolumeUsd ?? 0) >= minVolumeUsd).length,
         dayActiveCreators: new Set(launches.map((launch) => launch.creator)).size,
         minVolumeUsd
       };

@@ -480,7 +480,7 @@ function App() {
             icon={<ChartIcon />}
             danger={dayFakePct >= 50}
           />
-          <Metric label={`Launches ≥ $${launchStats?.minVolumeUsd ?? 100}`} value={launchStats?.dayLaunchCountMinVolume ?? 0} hint="With real traction" icon={<PulseIcon />} />
+          <Metric label={`Launches ≥ $${launchStats?.minVolumeUsd ?? 100} real`} value={launchStats?.dayLaunchCountMinVolume ?? 0} hint="Real (external) volume · analyzed" icon={<PulseIcon />} />
           <Metric label="Active creators" value={launchStats?.dayActiveCreators ?? 0} hint="Unique · last 24h" icon={<UsersIcon />} />
         </section>
 

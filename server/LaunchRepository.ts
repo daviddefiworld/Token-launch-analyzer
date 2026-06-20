@@ -4,7 +4,7 @@ import type { MarketData } from "./MarketDataService.js";
 import type { FundingInflow, WalletFunding } from "./WalletIntelService.js";
 
 const INDEX_VERSION = 6;
-// A launch counts as having "real traction" once its 24h volume clears this threshold.
+// A launch counts as having "real traction" once its real (external) 24h volume clears this threshold.
 const STATS_MIN_VOLUME_USD = 100;
 
 interface IndexState {
@@ -383,7 +383,9 @@ export class LaunchRepository {
           // Volume of pools whose attendee intel hasn't run yet (intelUpdatedAt still null),
           // so it can't yet be split into real vs fake.
           dayAnalyzingVolumeUsd: { $sum: { $cond: [{ $eq: [{ $ifNull: ["$intelUpdatedAt", null] }, null] }, { $ifNull: ["$volumeUsd", 0] }, 0] } },
-          dayLaunchCountMinVolume: { $sum: { $cond: [{ $gte: [{ $ifNull: ["$volumeUsd", 0] }, STATS_MIN_VOLUME_USD] }, 1, 0] } },
+          // "Real traction": analyzed pools whose real (external) volume clears the threshold.
+          // Gated on intelUpdatedAt so unanalyzed pools (real volume unknown) don't count.
+          dayLaunchCountMinVolume: { $sum: { $cond: [{ $and: [{ $ne: [{ $ifNull: ["$intelUpdatedAt", null] }, null] }, { $gte: [{ $ifNull: ["$externalVolumeUsd", 0] }, STATS_MIN_VOLUME_USD] }] }, 1, 0] } },
           creators: { $addToSet: "$creator" }
         }
       },
