@@ -10,6 +10,7 @@ import { MarketDataService } from "./MarketDataService.js";
 import { PriceService } from "./PriceService.js";
 import { RpcMetricsProvider } from "./RpcMetricsProvider.js";
 import { WalletIntelService } from "./WalletIntelService.js";
+import { exportDatabase, importDatabase, parseBackup } from "./BackupService.js";
 import { DEFAULT_DEX_ID, listAdapters } from "./skills/registry.js";
 import type { CreatorSort, DexInfo, LaunchSort, ResearchReport, WalletLabelKind } from "../types.js";
 
@@ -48,7 +49,8 @@ function resolveAnalyzer(request: Request): LaunchAnalyzer {
 }
 
 app.use(cors({ origin: "*" }));
-app.use(express.json());
+// Generous limit: a full DB backup uploaded to /api/backup/import can be many megabytes.
+app.use(express.json({ limit: "256mb" }));
 
 app.get("/api/dexes", (_request, response) => {
   response.json(dexInfos);
@@ -326,6 +328,65 @@ app.get("/api/research/:address", async (request, response, next) => {
       updatedAt: new Date().toISOString()
     };
     response.json(report);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ---- Full backup: export every collection (data + indexer settings) to one JSON file,
+// and restore the whole database from such a file. ----
+
+app.get("/api/backup/export", async (_request, response, next) => {
+  try {
+    const db = mongoose.connection.db;
+    if (mongoose.connection.readyState !== 1 || !db) {
+      response.status(503).json({ error: "Export requires live mode + MongoDB" });
+      return;
+    }
+    const stamp = new Date();
+    const json = await exportDatabase(db, stamp.toISOString());
+    const filename = `launch-analyzer-backup-${stamp.toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    response.send(json);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/backup/import", async (request, response, next) => {
+  try {
+    const db = mongoose.connection.db;
+    if (mongoose.connection.readyState !== 1 || !db) {
+      response.status(503).json({ error: "Import requires live mode + MongoDB" });
+      return;
+    }
+    // express.json() already parsed the uploaded backup into a plain object (the $-prefixed
+    // Extended-JSON wrappers survive as ordinary keys). Re-stringify so parseBackup can run it
+    // back through EJSON.parse and reconstruct the BSON types (ObjectId _ids, etc.).
+    const raw = typeof request.body === "string" ? request.body : JSON.stringify(request.body);
+    let backup;
+    try {
+      backup = parseBackup(raw);
+    } catch (error) {
+      response.status(422).json({ error: error instanceof Error ? error.message : "Invalid backup file" });
+      return;
+    }
+
+    // Pause every running indexer first so an in-flight sync can't overwrite the data we're
+    // about to restore. persist=false leaves the stored on/off flags untouched — the import
+    // overwrites them anyway, and resume() below re-applies whatever the backup contained.
+    const running = [...indexers.values()].filter((indexer) => indexer.status.enabled);
+    for (const indexer of running) indexer.stop(false);
+
+    const summary = await importDatabase(db, backup);
+
+    // Rehydrate each indexer from the freshly-restored settings (checkpoint, on/off choice,
+    // refresh throttles) and restart the ones the backup had enabled — so imported indexer
+    // state takes effect live without a server restart.
+    await Promise.all([...indexers.values()].map((indexer) => indexer.resume()));
+
+    response.json({ imported: true, exportedAt: backup.exportedAt, collections: summary });
   } catch (error) {
     next(error);
   }

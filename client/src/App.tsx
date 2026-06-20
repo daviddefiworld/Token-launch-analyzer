@@ -122,7 +122,9 @@ function App() {
   const [launchStats, setLaunchStats] = useState<LaunchStats | null>(null);
   const [error, setError] = useState("");
   const [refreshingMarket, setRefreshingMarket] = useState(false);
+  const [backupBusy, setBackupBusy] = useState<"export" | "import" | null>(null);
   const scrollSentinel = useRef<HTMLDivElement>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchJson<DexInfo[]>("/api/dexes")
@@ -195,6 +197,61 @@ function App() {
       setLoadingMore(false);
     }
   }, [createdWithinDays, dex, minLiquidityUsd, minVolumeUsd, poolType, search, sort]);
+
+  // Download a single JSON snapshot of the whole database (all launches/caches + indexer
+  // settings). Uses a raw fetch so we can stream the file body straight to a download.
+  const exportBackup = useCallback(async () => {
+    setBackupBusy("export");
+    setError("");
+    try {
+      const response = await fetch(`${API_URL}/api/backup/export`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `Export failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const filename = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "")?.[1]
+        || "launch-analyzer-backup.json";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setBackupBusy(null);
+    }
+  }, []);
+
+  // Restore the whole database from a previously-exported file. This REPLACES current data.
+  const importBackup = useCallback(async (file: File) => {
+    if (!window.confirm("Importing replaces ALL current data and indexer settings with the backup's contents. Continue?")) return;
+    setBackupBusy("import");
+    setError("");
+    try {
+      const text = await file.text();
+      const response = await fetch(`${API_URL}/api/backup/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: text
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Import failed (${response.status})`);
+      const counts = (body.collections ?? {}) as Record<string, number>;
+      const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+      // Pull every view back from the freshly-restored database.
+      await Promise.all([loadIndexers(), loadLaunches()]);
+      window.alert(`Restored ${total.toLocaleString()} records across ${Object.keys(counts).length} collections.`);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setBackupBusy(null);
+    }
+  }, [loadIndexers, loadLaunches]);
 
   const refreshMarketData = useCallback(async () => {
     if (refreshingMarket || status?.mode !== "live") return;
@@ -356,6 +413,28 @@ function App() {
           <button onClick={() => setPage("rpc")} className={`nav-item ${page === "rpc" ? "active" : ""}`}><PulseIcon /> RPC usage</button>
         </nav>
         <div className="sidebar-bottom">
+          <div className="backup-controls">
+            <span className="eyebrow">Backup</span>
+            <div className="backup-buttons">
+              <button type="button" className="backup-btn" disabled={backupBusy !== null} onClick={() => void exportBackup()} title="Download all data + settings as one JSON file">
+                {backupBusy === "export" ? "Exporting…" : "Export"}
+              </button>
+              <button type="button" className="backup-btn" disabled={backupBusy !== null} onClick={() => backupInputRef.current?.click()} title="Restore the whole database from a backup file">
+                {backupBusy === "import" ? "Importing…" : "Import"}
+              </button>
+            </div>
+            <input
+              ref={backupInputRef}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void importBackup(file);
+              }}
+            />
+          </div>
           <div className="network-card">
             <span className="eyebrow">Network</span>
             <strong><i className="status-dot" /> Base mainnet</strong>
