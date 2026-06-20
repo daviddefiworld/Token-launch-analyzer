@@ -191,11 +191,15 @@ a { color: #8effbd; }
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart-grid-line { stroke: #1f2836; stroke-width: 1; }
 .chart-label { fill: #687487; font-size: 9px; font-family: "DM Mono", monospace; }
-/* 24h volume real/fake split in the overview metric card */
-.vol-split { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
-.vol-real { color: #8effbd; }
-.vol-sep { color: #586273; font-weight: 600; }
-.vol-fake { color: #ff8090; }
+/* 24h volume real/fake split in the overview metric card.
+   Scoped under .metric-card so these beat the generic `.metric-card span`
+   rule (specificity 0,1,1) that otherwise forces display:block, 11px, muted
+   gray — which would stack the three values vertically and drop their colors. */
+.metric-card .vol-split { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; font-size: 18px; }
+.metric-card .vol-real, .metric-card .vol-sep, .metric-card .vol-fake { display: inline; font-size: inherit; }
+.metric-card .vol-real { color: #8effbd; }
+.metric-card .vol-sep { color: #586273; font-weight: 600; }
+.metric-card .vol-fake { color: #ff8090; }
 
 /* Real-volume column + attendee intelligence */
 .vol-cell { display: flex; flex-direction: column; gap: 2px; }
