@@ -1033,6 +1033,7 @@ function ResearchPage({ dex, mode, onError }: { dex: string; mode?: "demo" | "li
 
   const seedIsRug = report?.label === "rug-bot";
   const clusterMembers = report?.connections.filter((connection) => connection.inCluster).length ?? 0;
+  const shownConnections = report?.connections.slice(0, 40) ?? [];
 
   return <>
     <header className="topbar">
@@ -1046,105 +1047,135 @@ function ResearchPage({ dex, mode, onError }: { dex: string; mode?: "demo" | "li
       <div className="error-banner">Address research runs in live mode (needs BASESCAN_API_KEY + MongoDB).</div>
     )}
 
-    <section className="panel research-input-panel">
-      <div className="panel-heading compact">
-        <div>
-          <span className="eyebrow">Trace a wallet</span>
-          <h2>Walk the funding graph</h2>
-        </div>
-        <TargetIcon />
-      </div>
-      <form
-        className="research-form"
-        onSubmit={(event) => { event.preventDefault(); void runResearch(input); }}
-      >
+    <section className="panel research-search-panel">
+      <form className="research-form" onSubmit={(event) => { event.preventDefault(); void runResearch(input); }}>
         <label className="search-box research-search">
           <SearchIcon />
-          <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="0x wallet address to investigate" spellCheck={false} />
+          <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Paste a wallet address (0x…) to trace its funding graph" spellCheck={false} />
         </label>
-        <button type="submit" className="primary-button" disabled={loading || !isAddress(input)}>
-          {loading ? "Researching..." : "Research"}
+        <button type="submit" className="primary-button research-submit" disabled={loading || !isAddress(input)}>
+          <TargetIcon /> {loading ? "Researching…" : "Research"}
         </button>
       </form>
-      <p className="muted research-hint">
-        Walks both directions of the ETH funding graph (who funded this wallet, and who it funded), several hops out — cache-first with a bounded live BaseScan fetch. Tag a wallet as a rug bot to fold its whole cluster into insider detection across every launch.
-      </p>
+      <p className="research-hint">Walks the ETH funding graph both ways — who funded this wallet and who it funded — then flags any link to a tagged rug bot.</p>
     </section>
 
     <section className="analyst-grid research-grid">
       <div className="panel research-result-panel">
         {loading ? (
-          <div className="empty-state">Walking the funding graph...</div>
+          <div className="research-placeholder">
+            <span className="research-placeholder-icon spinning"><TargetIcon /></span>
+            <strong>Walking the funding graph…</strong>
+            <span className="muted">Tracing funders and funded wallets across BaseScan.</span>
+          </div>
         ) : !report ? (
-          <div className="empty-state">Enter an address above to map its funding connections.</div>
+          <div className="research-placeholder">
+            <span className="research-placeholder-icon"><TargetIcon /></span>
+            <strong>Trace a wallet</strong>
+            <span className="muted">Enter an address above to map its funding connections.</span>
+          </div>
         ) : (
           <>
-            <div className="research-summary">
-              <div className="wallet-address">
-                <strong className="mono">{short(report.address, 10)}</strong>
-                <a href={baseScanAddress(report.address)} target="_blank" rel="noreferrer"><ArrowIcon /></a>
-                {seedIsRug && <span className="attendee-badge rug-bot research-seed-tag">rug bot</span>}
-                {report.rugConnected && !seedIsRug && <span className="attendee-badge rug-bot research-seed-tag">rug-connected</span>}
+            <div className="panel-heading research-result-head">
+              <div className="research-result-title">
+                <span className="eyebrow">Funding graph</span>
+                <div className="wallet-headline">
+                  <strong className="mono">{short(report.address, 12)}</strong>
+                  <a className="address-link" href={baseScanAddress(report.address)} target="_blank" rel="noreferrer"><ArrowIcon /></a>
+                  {seedIsRug
+                    ? <span className="status-pill danger">Rug bot</span>
+                    : report.rugConnected
+                      ? <span className="status-pill danger">Rug-connected</span>
+                      : <span className="status-pill ok">No rug link</span>}
+                </div>
               </div>
               <div className="research-actions">
                 {seedIsRug ? (
                   <button type="button" className="secondary-button" disabled={tagging} onClick={() => void setLabel(report.address, null)}>
-                    Remove rug-bot tag
+                    {tagging ? "Removing…" : "Remove tag"}
                   </button>
                 ) : (
                   <>
-                    <input className="number-control research-note" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Note (optional)" />
+                    <input className="research-note" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Note (optional)" />
                     <button type="button" className="danger-button" disabled={tagging} onClick={() => void setLabel(report.address, "rug-bot")}>
-                      Tag as rug bot
+                      <ShieldIcon /> {tagging ? "Tagging…" : "Tag as rug bot"}
                     </button>
                   </>
                 )}
               </div>
             </div>
 
-            <section className="metrics attendee-metrics">
-              <Metric label="Wallets explored" value={report.walletsExplored} hint={report.complete ? "Full walk" : "Budget capped"} icon={<TargetIcon />} />
-              <Metric label="Connections" value={report.connectionCount} hint="Funder + funded links" icon={<UsersIcon />} />
-              <Metric label="In cluster" value={clusterMembers} hint="Share its private funders" icon={<WalletIcon />} danger={clusterMembers > 0} />
-              <Metric label="Linked rug bots" value={report.linkedRugBots.length} hint={report.rugConnected ? "Tied to a tagged bot" : "None found"} icon={<ShieldIcon />} danger={report.linkedRugBots.length > 0} />
-            </section>
+            <div className="research-body">
+              <div className="research-stats">
+                <div className="research-stat">
+                  <span>Wallets explored</span>
+                  <strong>{report.walletsExplored}</strong>
+                  <small>{report.complete ? "Complete walk" : "Budget capped"}</small>
+                </div>
+                <div className="research-stat">
+                  <span>Connections</span>
+                  <strong>{report.connectionCount}</strong>
+                  <small>Funder + funded</small>
+                </div>
+                <div className={`research-stat ${clusterMembers > 0 ? "danger" : ""}`}>
+                  <span>In cluster</span>
+                  <strong>{clusterMembers}</strong>
+                  <small>Shared private funders</small>
+                </div>
+                <div className={`research-stat ${report.linkedRugBots.length > 0 ? "danger" : ""}`}>
+                  <span>Linked rug bots</span>
+                  <strong>{report.linkedRugBots.length}</strong>
+                  <small>{report.rugConnected ? "Tied to a tagged bot" : "None found"}</small>
+                </div>
+              </div>
 
-            <div className="graph-section">
-              <div className="graph-heading">
-                <span className="eyebrow">Funding relationships</span>
-                {report.graph.nodes.length > 1 && (
-                  <span className="muted">{report.graph.nodes.length} wallets · {report.graph.edges.length} funding links</span>
+              <div className="graph-section">
+                <div className="graph-heading">
+                  <span className="eyebrow">Relationship map</span>
+                  {report.graph.nodes.length > 1 && (
+                    <span className="muted">{report.graph.nodes.length} wallets · {report.graph.edges.length} links</span>
+                  )}
+                </div>
+                {report.graph.nodes.length > 1 ? (
+                  <WalletGraph graph={report.graph} legend={RESEARCH_LEGEND} />
+                ) : (
+                  <p className="muted graph-empty">No funding connections found in the cache or within the live fetch budget.</p>
                 )}
               </div>
-              {report.graph.nodes.length > 1 ? (
-                <WalletGraph graph={report.graph} legend={RESEARCH_LEGEND} />
-              ) : (
-                <p className="muted graph-empty">No funding connections found for this wallet in the cache or within the live fetch budget.</p>
-              )}
+
+              <div className="graph-heading research-conn-heading">
+                <span className="eyebrow">Connections</span>
+                {report.connectionCount > shownConnections.length && (
+                  <span className="muted">Top {shownConnections.length} of {report.connectionCount}</span>
+                )}
+              </div>
             </div>
 
-            <div className="attendee-table table-shell">
-              <div className="table-row table-head research-row-head">
-                <span>Wallet</span><span>Relation</span><span>Hops</span><span>Cluster</span><span>Tx</span>
-              </div>
-              {report.connections.slice(0, 40).map((connection) => (
-                <div className="table-row research-conn-row" key={connection.address}>
-                  <span>
-                    <WalletLink address={connection.address} size={8} />
-                    {connection.label === "rug-bot" && <b className="attendee-badge rug-bot inline-badge">rug</b>}
-                  </span>
-                  <span><b className={`relation-badge ${connection.direction}`}>{DIRECTION_LABELS[connection.direction]}</b></span>
-                  <span className="muted">{connection.hops}</span>
-                  <span>{connection.inCluster ? <b className="cluster-yes">yes</b> : <span className="muted">no</span>}</span>
-                  <span>
-                    {connection.txHash
-                      ? <a className="tx-link" href={`https://basescan.org/tx/${connection.txHash}`} target="_blank" rel="noreferrer" title="Funding transaction"><ArrowIcon /></a>
-                      : <span className="muted">—</span>}
-                  </span>
+            {shownConnections.length > 0 ? (
+              <div className="research-table table-shell">
+                <div className="table-row table-head">
+                  <span>Wallet</span><span>Relation</span><span>Hops</span><span>Cluster</span><span>Tx</span>
                 </div>
-              ))}
-              {report.connectionCount > 40 && <div className="muted attendee-note">Showing the 40 strongest of {report.connectionCount} connections.</div>}
-            </div>
+                {shownConnections.map((connection) => (
+                  <div className="table-row research-conn-row" key={connection.address}>
+                    <span className="research-wallet-cell">
+                      <WalletLink address={connection.address} size={8} />
+                      {connection.label === "rug-bot" && <b className="attendee-badge rug-bot inline-badge">rug</b>}
+                    </span>
+                    <span><b className={`relation-badge ${connection.direction}`}>{DIRECTION_LABELS[connection.direction]}</b></span>
+                    <span className="muted">{connection.hops}</span>
+                    <span>{connection.inCluster ? <b className="cluster-yes">yes</b> : <span className="muted">—</span>}</span>
+                    <span>
+                      {connection.txHash
+                        ? <a className="tx-link" href={`https://basescan.org/tx/${connection.txHash}`} target="_blank" rel="noreferrer" title="Funding transaction"><ArrowIcon /></a>
+                        : <span className="muted">—</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="research-body"><p className="muted graph-empty">No connected wallets within the explored graph.</p></div>
+            )}
           </>
         )}
       </div>
@@ -1156,20 +1187,20 @@ function ResearchPage({ dex, mode, onError }: { dex: string; mode?: "demo" | "li
               <span className="eyebrow">Manual labels</span>
               <h2>Tagged rug bots</h2>
             </div>
-            <ShieldIcon />
+            <span className="labels-count">{labels.length}</span>
           </div>
           {labels.length === 0 ? (
-            <div className="empty-state compact">No wallets tagged yet. Research an address and tag it as a rug bot.</div>
+            <div className="empty-state compact">No wallets tagged yet. Research an address and tag it as a rug bot to fold its cluster into insider detection.</div>
           ) : (
             <div className="labels-list">
               {labels.map((label) => (
-                <div className="label-item" key={label.address}>
+                <div className={`label-item ${label.address === report?.address ? "active" : ""}`} key={label.address}>
                   <button type="button" className="label-address" onClick={() => { setInput(label.address); void runResearch(label.address); }} title="Research this wallet">
                     <span className={`attendee-badge ${label.kind === "rug-bot" ? "rug-bot" : "linked"}`}>{label.kind}</span>
                     <span className="mono">{short(label.address, 8)}</span>
                   </button>
-                  {label.note && <small className="label-note">{label.note}</small>}
                   <button type="button" className="label-remove" disabled={tagging} onClick={() => void setLabel(label.address, null)} title="Remove tag">×</button>
+                  {label.note && <small className="label-note">{label.note}</small>}
                 </div>
               ))}
             </div>
