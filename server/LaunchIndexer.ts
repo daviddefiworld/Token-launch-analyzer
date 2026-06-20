@@ -21,6 +21,9 @@ interface LaunchIndexerOptions {
   startBlock: number;
   blockChunk: number;
   intervalMs?: number;
+  // Whether this DEX indexes on a fresh boot (no persisted on/off choice). Only the default
+  // DEX is true, so a clean install runs one indexer instead of all of them on one limiter.
+  defaultEnabled?: boolean;
 }
 
 export class LaunchIndexer {
@@ -39,18 +42,20 @@ export class LaunchIndexer {
   private readonly startBlock: number;
   private readonly blockChunk: number;
   private readonly intervalMs: number;
+  private readonly defaultEnabled: boolean;
   private timer?: NodeJS.Timeout;
   private activeSync?: Promise<void>;
   private lastMarketRefreshAt = 0;
   private lastIntelRefreshAt = 0;
 
-  constructor({ analyzer, repository, marketDataService, startBlock, blockChunk, intervalMs = 15_000 }: LaunchIndexerOptions) {
+  constructor({ analyzer, repository, marketDataService, startBlock, blockChunk, intervalMs = 15_000, defaultEnabled = false }: LaunchIndexerOptions) {
     this.analyzer = analyzer;
     this.repository = repository;
     this.marketDataService = marketDataService;
     this.startBlock = startBlock;
     this.blockChunk = blockChunk;
     this.intervalMs = intervalMs;
+    this.defaultEnabled = defaultEnabled;
   }
 
   start(persist = true): void {
@@ -73,7 +78,9 @@ export class LaunchIndexer {
   // left enabled; passes persist=false so reading the stored flag doesn't rewrite it.
   async resume(): Promise<void> {
     await this.restoreStatus();
-    if (await this.repository.getMonitorEnabled()) this.start(false);
+    // With no persisted choice, only the default DEX starts — a fresh boot runs one indexer
+    // on the shared Etherscan limiter rather than all of them at once.
+    if (await this.repository.getMonitorEnabled(this.defaultEnabled)) this.start(false);
   }
 
   // Rehydrate the in-memory status and refresh throttles from the persisted snapshot, so a

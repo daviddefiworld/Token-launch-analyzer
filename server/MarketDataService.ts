@@ -1,6 +1,6 @@
 import { Contract, formatUnits } from "ethers";
 import type { AttendeeBuyer, AttendeeReport, Launch } from "../types.js";
-import type { EtherscanService } from "./EtherscanService.js";
+import type { EtherscanLog, EtherscanService } from "./EtherscanService.js";
 import type { LaunchRepository } from "./LaunchRepository.js";
 import type { PriceService } from "./PriceService.js";
 import type { RpcMetricsProvider } from "./RpcMetricsProvider.js";
@@ -47,7 +47,13 @@ const BLOCKS_PER_DAY = 43_200;
 export class MarketDataService {
   private static readonly DEX_BATCH_SIZE = 30;
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
+  // A pool's 24h swap logs are the heaviest Etherscan call and are needed by BOTH the volume
+  // path and the attendee-intel path. Cache them briefly so the second caller reuses the
+  // first's fetch instead of re-paging the same window.
+  private static readonly SWAP_LOG_TTL_MS = 90_000;
+  private static readonly SWAP_LOG_CACHE_MAX = 400;
   private readonly decimalsCache = new Map<string, number>();
+  private readonly swapLogCache = new Map<string, { fromBlock: number; toBlock: number; logs: EtherscanLog[]; at: number }>();
   private readonly swapTopic: string;
 
   constructor(
@@ -164,15 +170,29 @@ export class MarketDataService {
     return Number(formatUnits(quoteReserve, quoteDecimals)) * price * 2;
   }
 
+  // Fetch a pool's swap logs once and reuse across the volume and attendee-intel paths. Both
+  // anchor the same ~24h window to the chain tip, so a <90s-old cache entry differs by only a
+  // few blocks at the tail — negligible against a 24h span — while halving the heaviest call.
+  private async getSwapLogs(poolAddress: string, fromBlock: number, toBlock: number): Promise<EtherscanLog[]> {
+    const key = poolAddress.toLowerCase();
+    const now = Date.now();
+    const cached = this.swapLogCache.get(key);
+    if (cached && now - cached.at < MarketDataService.SWAP_LOG_TTL_MS && cached.fromBlock <= fromBlock + 1) {
+      return cached.logs.filter((log) => log.blockNumber >= fromBlock);
+    }
+    const logs = await this.etherscan!.getLogs({ address: poolAddress, topic0: this.swapTopic, fromBlock, toBlock });
+    this.swapLogCache.set(key, { fromBlock, toBlock, logs, at: now });
+    if (this.swapLogCache.size > MarketDataService.SWAP_LOG_CACHE_MAX) {
+      const oldest = this.swapLogCache.keys().next().value;
+      if (oldest !== undefined) this.swapLogCache.delete(oldest);
+    }
+    return logs;
+  }
+
   // Sum of every swap's quote-token leg over the last 24h, valued in USD.
   private async computeVolume(launch: Launch, quoteDecimals: number, price: number, latestBlock: number): Promise<number> {
     const fromBlock = Math.max(latestBlock - BLOCKS_PER_DAY, launch.blockNumber);
-    const logs = await this.etherscan!.getLogs({
-      address: launch.poolAddress,
-      topic0: this.swapTopic,
-      fromBlock,
-      toBlock: latestBlock
-    });
+    const logs = await this.getSwapLogs(launch.poolAddress, fromBlock, latestBlock);
     const quoteIsToken0 = isQuoteToken0(launch.quoteAddress!, launch.tokenAddress);
     let quoteTotal = 0n;
     for (const log of logs) {
@@ -192,12 +212,7 @@ export class MarketDataService {
 
     const latestBlock = await this.etherscan.getBlockNumber();
     const fromBlock = Math.max(latestBlock - BLOCKS_PER_DAY, launch.blockNumber);
-    const logs = await this.etherscan.getLogs({
-      address: launch.poolAddress,
-      topic0: this.swapTopic,
-      fromBlock,
-      toBlock: latestBlock
-    });
+    const logs = await this.getSwapLogs(launch.poolAddress, fromBlock, latestBlock);
 
     // Attribute each swap to the EOA that signed its transaction (the real buyer) rather
     // than the swap event's `to`, which for router/aggregator swaps is the router contract.

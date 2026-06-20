@@ -354,7 +354,7 @@ async function start(): Promise<void> {
         analyzer.walletIntel = walletIntel;
         if (analyzer.mode === "live") {
           const marketDataService = new MarketDataService(adapter, etherscan, priceService, analyzer.provider, walletIntel, repository);
-          indexers.set(adapter.id, new LaunchIndexer({ analyzer, repository, marketDataService, startBlock, blockChunk: logChunk }));
+          indexers.set(adapter.id, new LaunchIndexer({ analyzer, repository, marketDataService, startBlock, blockChunk: logChunk, defaultEnabled: adapter.id === DEFAULT_DEX_ID }));
         }
       }
     } catch (error) {

@@ -92,7 +92,7 @@ const fetchJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
 const withDex = (path: string, dex: string) =>
   `${path}${path.includes("?") ? "&" : "?"}dex=${encodeURIComponent(dex)}`;
 
-const DEFAULT_DEX = "aerodrome";
+const DEFAULT_DEX = "uniswap-v2";
 
 function App() {
   const [dex, setDex] = useState<string>(DEFAULT_DEX);
@@ -752,7 +752,10 @@ function computeGraphLayout(graph: AttendeeGraph, width: number, height: number)
     .map((edge) => [indexByAddress.get(edge.from), indexByAddress.get(edge.to)] as [number | undefined, number | undefined])
     .filter((pair): pair is [number, number] => pair[0] != null && pair[1] != null);
 
-  for (let iteration = 0; iteration < 220; iteration++) {
+  // The layout is O(nodes²) per iteration, so scale iterations down for larger graphs to keep
+  // it off the render thread for too long (the research graph can reach ~160 nodes).
+  const iterations = count > 110 ? 90 : count > 60 ? 150 : 220;
+  for (let iteration = 0; iteration < iterations; iteration++) {
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const dx = nodes[i].x - nodes[j].x;

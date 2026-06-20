@@ -4,8 +4,8 @@ import uniswapV2Adapter from "./uniswap-v2/index.js";
 import uniswapV3Adapter from "./uniswap-v3/index.js";
 
 // Registry of supported DEX adapters. Order defines the UI switcher order; the first entry
-// is the default when no ?dex= is supplied.
-export const ADAPTERS: DexAdapter[] = [aerodromeAdapter, uniswapV2Adapter, uniswapV3Adapter];
+// is the default when no ?dex= is supplied (and the only one indexing on a fresh boot).
+export const ADAPTERS: DexAdapter[] = [uniswapV2Adapter, aerodromeAdapter, uniswapV3Adapter];
 
 export const DEFAULT_DEX_ID = ADAPTERS[0].id;
 

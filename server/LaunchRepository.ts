@@ -51,6 +51,18 @@ const launchSchema = new mongoose.Schema<Launch>(
   },
   { versionKey: false }
 );
+// Compound indexes backing the hot list/sort/stat/refresh queries, each led by `dex` (every
+// query is DEX-scoped) and tie-broken by the cursor field. Without these, sorting/paginating
+// by volume/liquidity/real-volume, the 24h stats, the creators rollup, and the background
+// "stale launches" scans all fall back to full collection scans + in-memory sorts.
+launchSchema.index({ dex: 1, blockNumber: -1, id: -1 });        // newest / oldest + cursor
+launchSchema.index({ dex: 1, volumeUsd: -1, id: -1 });          // sort: 24h volume
+launchSchema.index({ dex: 1, liquidityUsd: -1, id: -1 });       // sort: liquidity
+launchSchema.index({ dex: 1, externalVolumeUsd: -1, id: -1 });  // sort: real volume
+launchSchema.index({ dex: 1, createdAt: 1 });                   // stats / daily analytics / monitor cutoff
+launchSchema.index({ dex: 1, creator: 1 });                     // creator profile + creators rollup
+launchSchema.index({ dex: 1, marketDataUpdatedAt: 1, blockNumber: -1 }); // market-data refresh scan
+launchSchema.index({ dex: 1, intelUpdatedAt: 1, volumeUsd: -1 });        // attendee-intel refresh scan
 const indexStateSchema = new mongoose.Schema<IndexState>(
   {
     _id: { type: String, required: true },
@@ -191,6 +203,12 @@ const walletLabelSchema = new mongoose.Schema<WalletLabel>(
 );
 const WalletLabelModel = mongoose.models.WalletLabel || mongoose.model<WalletLabel>("WalletLabel", walletLabelSchema);
 
+// Short-lived per-filter count cache, shared across repositories (every filter carries `dex`,
+// so there's no cross-DEX collision). Stops the list view from re-running countDocuments over
+// the whole collection on every keystroke/scroll.
+const COUNT_TTL_MS = 10_000;
+const countCache = new Map<string, { total: number; at: number }>();
+
 // One repository per DEX. All launch queries are scoped to the adapter's `dex` id and each
 // DEX keeps its own indexing checkpoint, so the three DEXes share collections without their
 // data leaking across the ?dex= switcher. Token-creation times are chain-global and shared.
@@ -211,6 +229,22 @@ export class LaunchRepository {
     return new Date(Date.now() - this.monitorWindowHours * 3_600_000).toISOString();
   }
 
+  // Cached total for a list filter. The key serializes RegExp search patterns by source so
+  // distinct searches don't collide; entries expire after COUNT_TTL_MS.
+  private async getCachedCount(baseFilter: Record<string, unknown>): Promise<number> {
+    const key = JSON.stringify(baseFilter, (_field, value) => (value instanceof RegExp ? value.toString() : value));
+    const now = Date.now();
+    const cached = countCache.get(key);
+    if (cached && now - cached.at < COUNT_TTL_MS) return cached.total;
+    const total = await LaunchModel.countDocuments(baseFilter);
+    countCache.set(key, { total, at: now });
+    if (countCache.size > 200) {
+      const oldest = countCache.keys().next().value;
+      if (oldest !== undefined) countCache.delete(oldest);
+    }
+    return total;
+  }
+
   async getPage({ cursor, limit, search, poolType, minLiquidityUsd, minVolumeUsd, createdWithinDays, sort }: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; createdWithinDays?: number; sort: LaunchSort }): Promise<LaunchPage> {
     const baseFilter: Record<string, unknown> = { dex: this.dexId };
     if (poolType && poolType !== "all") baseFilter.poolType = poolType;
@@ -229,7 +263,7 @@ export class LaunchRepository {
 
     const [items, total] = await Promise.all([
       LaunchModel.find(filter).sort(sortDefinition).limit(limit + 1).lean<Launch[]>(),
-      LaunchModel.countDocuments(baseFilter)
+      this.getCachedCount(baseFilter)
     ]);
     const hasMore = items.length > limit;
     const pageItems = items.slice(0, limit);

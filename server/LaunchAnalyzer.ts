@@ -19,6 +19,28 @@ interface AnalyzerOptions {
 }
 
 const FIRST_TRADE_SCAN_BLOCKS = 100_000;
+// Caps for the analyzer's in-process caches. A long-running indexer touches huge numbers of
+// blocks/tokens, so these would otherwise grow without bound. `blocks` is the heaviest (one
+// entry per block visited), hence the larger cap.
+const BLOCK_CACHE_MAX = 4000;
+const METADATA_CACHE_MAX = 5000;
+
+// Insertion-ordered map with a hard size cap: once full, the oldest entry is evicted on each
+// new insert. Good enough for these write-mostly metadata caches (no need for true LRU).
+class BoundedMap<K, V> extends Map<K, V> {
+  constructor(private readonly max: number) {
+    super();
+  }
+
+  override set(key: K, value: V): this {
+    super.set(key, value);
+    if (this.size > this.max) {
+      const oldest = this.keys().next().value;
+      if (oldest !== undefined) this.delete(oldest);
+    }
+    return this;
+  }
+}
 
 // Generic ERC20 metadata reads, shared by every DEX adapter.
 const TOKEN_ABI = [
@@ -55,10 +77,10 @@ export class LaunchAnalyzer {
   repository: LaunchRepository | null;
   // Assigned after construction (in live mode) so creator funding uses the shared cache.
   walletIntel: WalletIntelService | null = null;
-  private readonly blocks = new Map<number, Block>();
-  private readonly tokenSymbols = new Map<string, string>();
-  private readonly tokenDecimals = new Map<string, number>();
-  private readonly poolMetadata = new Map<string, { quoteAddress: string; quoteIsToken0: boolean; quoteDecimals: number }>();
+  private readonly blocks = new BoundedMap<number, Block>(BLOCK_CACHE_MAX);
+  private readonly tokenSymbols = new BoundedMap<string, string>(METADATA_CACHE_MAX);
+  private readonly tokenDecimals = new BoundedMap<string, number>(METADATA_CACHE_MAX);
+  private readonly poolMetadata = new BoundedMap<string, { quoteAddress: string; quoteIsToken0: boolean; quoteDecimals: number }>(METADATA_CACHE_MAX);
 
   constructor({ adapter, provider = null, etherscan = null, priceService = null, logChunk = 2000, repository = null }: AnalyzerOptions) {
     this.adapter = adapter;
