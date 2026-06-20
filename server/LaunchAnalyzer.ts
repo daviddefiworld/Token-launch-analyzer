@@ -99,7 +99,7 @@ export class LaunchAnalyzer {
     return this.provider ? "live" : "demo";
   }
 
-  async getLaunches(options: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; createdWithinDays?: number; sort: LaunchSort }): Promise<LaunchPage> {
+  async getLaunches(options: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; sort: LaunchSort }): Promise<LaunchPage> {
     if (!this.provider) {
       const items = this.#demoLaunches();
       return { items: items.slice(0, options.limit), nextCursor: null, total: items.length };

@@ -245,13 +245,11 @@ export class LaunchRepository {
     return total;
   }
 
-  async getPage({ cursor, limit, search, poolType, minLiquidityUsd, minVolumeUsd, createdWithinDays, sort }: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; createdWithinDays?: number; sort: LaunchSort }): Promise<LaunchPage> {
+  async getPage({ cursor, limit, search, poolType, minLiquidityUsd, minVolumeUsd, sort }: { cursor?: string; limit: number; search?: string; poolType?: PoolType; minLiquidityUsd?: number; minVolumeUsd?: number; sort: LaunchSort }): Promise<LaunchPage> {
     const baseFilter: Record<string, unknown> = { dex: this.dexId };
     if (poolType && poolType !== "all") baseFilter.poolType = poolType;
     if (minLiquidityUsd != null) baseFilter.liquidityUsd = { $gte: minLiquidityUsd };
     if (minVolumeUsd != null) baseFilter.volumeUsd = { $gte: minVolumeUsd };
-    // UI-driven token-age filter; pools with unknown creation time are excluded when set.
-    if (createdWithinDays != null) baseFilter.tokenAgeAtLaunchHours = { $ne: null, $lte: createdWithinDays * 24 };
     if (search) {
       const pattern = new RegExp(this.escapeRegExp(search), "i");
       baseFilter.$or = [{ pair: pattern }, { creator: pattern }, { poolAddress: pattern }];

@@ -108,7 +108,7 @@ app.get("/api/status", (request, response) => {
 app.get("/api/launches", async (request, response, next) => {
   try {
     const limit = Math.min(Math.max(Number(request.query.limit) || 30, 1), 100);
-    const sort = ["newest", "oldest", "liquidity", "volume"].includes(String(request.query.sort))
+    const sort = ["newest", "oldest", "liquidity", "volume", "realVolume"].includes(String(request.query.sort))
       ? request.query.sort as LaunchSort
       : "newest";
     response.json(await resolveAnalyzer(request).getLaunches({
@@ -117,7 +117,6 @@ app.get("/api/launches", async (request, response, next) => {
       poolType: typeof request.query.poolType === "string" ? request.query.poolType : undefined,
       minLiquidityUsd: toOptionalNumber(request.query.minLiquidityUsd),
       minVolumeUsd: toOptionalNumber(request.query.minVolumeUsd),
-      createdWithinDays: toOptionalNumber(request.query.createdWithinDays),
       sort,
       limit
     }));

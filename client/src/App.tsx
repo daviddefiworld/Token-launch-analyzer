@@ -110,7 +110,6 @@ function App() {
   const [sort, setSort] = useState<LaunchSort>("newest");
   const [minLiquidityUsd, setMinLiquidityUsd] = useState("");
   const [minVolumeUsd, setMinVolumeUsd] = useState("");
-  const [createdWithinDays, setCreatedWithinDays] = useState("");
   const [tradeFilter, setTradeFilter] = useState<TradeSide | "all">("all");
   const [flowOpen, setFlowOpen] = useState(true);
   const [page, setPage] = useState<"overview" | "creators" | "research" | "analytics" | "rpc">("overview");
@@ -177,7 +176,6 @@ function App() {
     if (poolType !== "all") params.set("poolType", poolType);
     if (minLiquidityUsd) params.set("minLiquidityUsd", minLiquidityUsd);
     if (minVolumeUsd) params.set("minVolumeUsd", minVolumeUsd);
-    if (createdWithinDays) params.set("createdWithinDays", createdWithinDays);
     params.set("sort", sort);
 
     try {
@@ -196,7 +194,7 @@ function App() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [createdWithinDays, dex, minLiquidityUsd, minVolumeUsd, poolType, search, sort]);
+  }, [dex, minLiquidityUsd, minVolumeUsd, poolType, search, sort]);
 
   // Download a single JSON snapshot of the whole database (all launches/caches + indexer
   // settings). Uses a raw fetch so we can stream the file body straight to a download.
@@ -514,9 +512,6 @@ function App() {
               )}
               <select className="select-control" value={sort} onChange={(event) => setSort(event.target.value as LaunchSort)}>
                 <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="liquidity">Liquidity</option><option value="volume">24h volume</option><option value="realVolume">Real volume</option>
-              </select>
-              <select className="select-control" value={createdWithinDays} onChange={(event) => setCreatedWithinDays(event.target.value)}>
-                <option value="">Any token age at LP</option><option value="1">Created &lt; 1d before LP</option><option value="3">Created &lt; 3d before LP</option><option value="7">Created &lt; 1w before LP</option><option value="30">Created &lt; 1mo before LP</option>
               </select>
               <input className="number-control" type="number" min="0" value={minLiquidityUsd} onChange={(event) => setMinLiquidityUsd(event.target.value)} placeholder="Min liq $" />
               <input className="number-control" type="number" min="0" value={minVolumeUsd} onChange={(event) => setMinVolumeUsd(event.target.value)} placeholder="Min vol $" />
