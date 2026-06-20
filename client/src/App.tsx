@@ -362,6 +362,9 @@ function App() {
                   : `Indexed block ${status.indexer.indexedBlock.toLocaleString()}`}
               </small>
             )}
+            {status?.mode === "live" && status.indexer?.lastSyncAt && (
+              <small>Last synced {formatDate(status.indexer.lastSyncAt)}</small>
+            )}
           </div>
           <span className="version">{dexLabel} · {currentDex?.network ?? "Base"}</span>
         </div>

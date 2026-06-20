@@ -223,6 +223,7 @@ export interface ApiStatus {
     isRunning: boolean;
     indexedBlock: number | null;
     latestBlock: number | null;
+    lastSyncAt: string | null;
     error: string | null;
   };
 }

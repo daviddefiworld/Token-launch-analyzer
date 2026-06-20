@@ -69,6 +69,31 @@ const indexerControlSchema = new mongoose.Schema<IndexerControl>(
 const LaunchModel = mongoose.models.Launch || mongoose.model<Launch>("Launch", launchSchema);
 const IndexStateModel = mongoose.models.IndexState || mongoose.model<IndexState>("IndexState", indexStateSchema);
 const IndexerControlModel = mongoose.models.IndexerControl || mongoose.model<IndexerControl>("IndexerControl", indexerControlSchema);
+
+// Persisted indexer status snapshot per DEX. The scanned checkpoint lives in IndexState;
+// this carries the rest of the runtime status (chain tip, last sync, last error) plus the
+// market/intel refresh throttles, so a restart resumes where it left off instead of
+// immediately re-refreshing recently-analyzed launches.
+export interface IndexerStatusState {
+  _id: string;
+  latestBlock: number | null;
+  lastSyncAt: string | null;
+  lastMarketRefreshAt: number;
+  lastIntelRefreshAt: number;
+  error: string | null;
+}
+const indexerStatusSchema = new mongoose.Schema<IndexerStatusState>(
+  {
+    _id: { type: String, required: true },
+    latestBlock: { type: Number, default: null },
+    lastSyncAt: { type: String, default: null },
+    lastMarketRefreshAt: { type: Number, default: 0 },
+    lastIntelRefreshAt: { type: Number, default: 0 },
+    error: { type: String, default: null }
+  },
+  { versionKey: false }
+);
+const IndexerStatusModel = mongoose.models.IndexerStatus || mongoose.model<IndexerStatusState>("IndexerStatus", indexerStatusSchema);
 const tokenCreationSchema = new mongoose.Schema<TokenCreation>(
   {
     address: { type: String, required: true, unique: true },
@@ -351,6 +376,16 @@ export class LaunchRepository {
       { $set: { enabled } },
       { upsert: true }
     );
+  }
+
+  // Persisted indexer status snapshot (chain tip, last sync/error, refresh throttles), so the
+  // runtime status and throttles survive a restart instead of resetting to zero.
+  async getIndexerStatus(): Promise<IndexerStatusState | null> {
+    return IndexerStatusModel.findById(this.dexId).lean<IndexerStatusState | null>();
+  }
+
+  async saveIndexerStatus(patch: Partial<Omit<IndexerStatusState, "_id">>): Promise<void> {
+    await IndexerStatusModel.updateOne({ _id: this.dexId }, { $set: patch }, { upsert: true });
   }
 
   async getIndexedBlock(defaultBlock: number): Promise<number> {

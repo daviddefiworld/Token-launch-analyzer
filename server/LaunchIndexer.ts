@@ -9,6 +9,8 @@ export interface LaunchIndexerStatus {
   isRunning: boolean;
   indexedBlock: number | null;
   latestBlock: number | null;
+  // ISO timestamp of the last completed sync, persisted so it survives a restart.
+  lastSyncAt: string | null;
   error: string | null;
 }
 
@@ -27,6 +29,7 @@ export class LaunchIndexer {
     isRunning: false,
     indexedBlock: null,
     latestBlock: null,
+    lastSyncAt: null,
     error: null
   };
 
@@ -69,7 +72,22 @@ export class LaunchIndexer {
   // Restore the persisted on/off choice on boot. Starts the loop only if monitoring was
   // left enabled; passes persist=false so reading the stored flag doesn't rewrite it.
   async resume(): Promise<void> {
+    await this.restoreStatus();
     if (await this.repository.getMonitorEnabled()) this.start(false);
+  }
+
+  // Rehydrate the in-memory status and refresh throttles from the persisted snapshot, so a
+  // restart resumes from the last scanned block and doesn't immediately re-refresh launches
+  // that were analyzed moments before shutdown.
+  private async restoreStatus(): Promise<void> {
+    this.status.indexedBlock = await this.repository.getIndexedBlock(this.startBlock - 1);
+    const persisted = await this.repository.getIndexerStatus();
+    if (!persisted) return;
+    this.status.latestBlock = persisted.latestBlock;
+    this.status.lastSyncAt = persisted.lastSyncAt;
+    this.status.error = persisted.error;
+    this.lastMarketRefreshAt = persisted.lastMarketRefreshAt;
+    this.lastIntelRefreshAt = persisted.lastIntelRefreshAt;
   }
 
   sync(): Promise<void> {
@@ -100,9 +118,12 @@ export class LaunchIndexer {
       }
       await this.refreshMarketData(20);
       await this.refreshIntel();
+      this.status.lastSyncAt = new Date().toISOString();
+      await this.repository.saveIndexerStatus({ latestBlock, lastSyncAt: this.status.lastSyncAt, error: null });
     } catch (error) {
       const message = this.getErrorMessage(error);
       this.status.error = message;
+      void this.repository.saveIndexerStatus({ error: message }).catch(() => {});
       if (this.isTimeoutError(error)) {
         console.warn(`Launch indexing delayed: ${message}. Retrying on the next sync.`);
       } else {
@@ -116,6 +137,7 @@ export class LaunchIndexer {
   async refreshMarketData(limit = 20, force = false): Promise<number> {
     if (!force && Date.now() - this.lastMarketRefreshAt < 5_000) return 0;
     this.lastMarketRefreshAt = Date.now();
+    void this.repository.saveIndexerStatus({ lastMarketRefreshAt: this.lastMarketRefreshAt }).catch(() => {});
 
     const launches = await this.repository.getLaunchesForMarketData(limit);
     if (!launches.length) return 0;
@@ -136,6 +158,7 @@ export class LaunchIndexer {
   async refreshIntel(limit = 4, force = false): Promise<number> {
     if (!force && Date.now() - this.lastIntelRefreshAt < 30_000) return 0;
     this.lastIntelRefreshAt = Date.now();
+    void this.repository.saveIndexerStatus({ lastIntelRefreshAt: this.lastIntelRefreshAt }).catch(() => {});
 
     const launches = await this.repository.getLaunchesForIntel(limit);
     if (!launches.length) return 0;
