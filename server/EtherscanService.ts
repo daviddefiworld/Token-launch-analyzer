@@ -1,7 +1,13 @@
 // Thin, rate-limited client over the Etherscan v2 API (Base, chainid 8453).
 //
 // Free tier limits: 5 calls/sec and 100,000 calls/day. Every public method funnels
-// through schedule(), which serializes requests to stay safely under both ceilings.
+// through schedule(), a priority queue that serializes requests to stay safely under both
+// ceilings while letting interactive work (e.g. the on-demand address research panel) jump
+// ahead of the background indexing/refresh loops.
+
+// Request priority. Higher wins; ties break FIFO. Interactive requests (a user is waiting on
+// the result) are dispatched before BACKGROUND loop traffic queued on the same limiter.
+export const REQUEST_PRIORITY = { BACKGROUND: 0, INTERACTIVE: 10 } as const;
 
 const CHAIN_ID = "8453";
 const BASE_URL = "https://api.etherscan.io/v2/api";
@@ -46,11 +52,23 @@ interface EtherscanEnvelope {
   result?: unknown;
 }
 
+interface ScheduleWaiter {
+  priority: number;
+  // Monotonic sequence for FIFO ordering within a priority band.
+  seq: number;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
 export class EtherscanService {
   private nextSlot = 0;
   private dailyCount = 0;
   private windowStart = Date.now();
   private ethPrice: { value: number; at: number } | null = null;
+  // Priority queue of pending requests, drained one-per-interval by pump().
+  private readonly queue: ScheduleWaiter[] = [];
+  private queueSeq = 0;
+  private pumping = false;
 
   constructor(private readonly apiKey: string) {}
 
@@ -140,7 +158,7 @@ export class EtherscanService {
   // continuous (a wallet is topped up many times from many places), so we keep them all —
   // any one of them can tie a buyer to the founder's cluster. Costs exactly 2 API requests
   // regardless of `maxFunders` (the offset only changes the response size, not the count).
-  async getIncomingTransfers(address: string, maxFunders = 12): Promise<IncomingTransfer[]> {
+  async getIncomingTransfers(address: string, maxFunders = 12, opts: { priority?: number } = {}): Promise<IncomingTransfer[]> {
     const lower = address.toLowerCase();
     const params = (action: string) => ({
       module: "account",
@@ -153,8 +171,8 @@ export class EtherscanService {
       sort: "asc" as const
     });
     const [normal, internal] = await Promise.all([
-      this.request(params("txlist")),
-      this.request(params("txlistinternal"))
+      this.request(params("txlist"), opts),
+      this.request(params("txlistinternal"), opts)
     ]);
 
     const transfers: IncomingTransfer[] = [];
@@ -186,7 +204,7 @@ export class EtherscanService {
   // transactions, earliest first and capped at `maxRecipients`. The mirror image of
   // getIncomingTransfers — used by the research panel to walk the wallets a bot funded.
   // Costs exactly 2 API requests regardless of `maxRecipients`.
-  async getOutgoingTransfers(address: string, maxRecipients = 25): Promise<IncomingTransfer[]> {
+  async getOutgoingTransfers(address: string, maxRecipients = 25, opts: { priority?: number } = {}): Promise<IncomingTransfer[]> {
     const lower = address.toLowerCase();
     const params = (action: string) => ({
       module: "account",
@@ -199,8 +217,8 @@ export class EtherscanService {
       sort: "asc" as const
     });
     const [normal, internal] = await Promise.all([
-      this.request(params("txlist")),
-      this.request(params("txlistinternal"))
+      this.request(params("txlist"), opts),
+      this.request(params("txlistinternal"), opts)
     ]);
 
     // Each transfer's `from` is the recipient the seed funded (we keep the field name so the
@@ -228,29 +246,62 @@ export class EtherscanService {
     return [...byRecipient.values()];
   }
 
-  private async schedule(): Promise<void> {
-    const now = Date.now();
-    if (now - this.windowStart >= DAY_MS) {
-      this.windowStart = now;
-      this.dailyCount = 0;
-    }
-    if (this.dailyCount >= DAILY_LIMIT) {
-      throw new Error("Etherscan daily request budget reached; skipping call");
-    }
-    const slot = Math.max(now, this.nextSlot);
-    this.nextSlot = slot + MIN_INTERVAL_MS;
-    this.dailyCount += 1;
-    const wait = slot - now;
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  // Reserve a rate-limit slot. Returns once it's this caller's turn; callers with a higher
+  // priority are served first even if they enqueued later (but never starve a slot already
+  // being waited out). Defaults to BACKGROUND priority.
+  private schedule(priority: number = REQUEST_PRIORITY.BACKGROUND): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.queue.push({ priority, seq: this.queueSeq++, resolve, reject });
+      void this.pump();
+    });
   }
 
-  private async request(params: Record<string, string>): Promise<EtherscanEnvelope> {
+  // Drains the queue, releasing one waiter per MIN_INTERVAL_MS. The waiter to release is
+  // chosen *after* the interval wait, so an interactive request that arrives mid-wait can
+  // still claim the upcoming slot ahead of background traffic.
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.queue.length) {
+        const now = Date.now();
+        if (now - this.windowStart >= DAY_MS) {
+          this.windowStart = now;
+          this.dailyCount = 0;
+        }
+        if (this.dailyCount >= DAILY_LIMIT) {
+          const error = new Error("Etherscan daily request budget reached; skipping call");
+          for (const waiter of this.queue.splice(0)) waiter.reject(error);
+          break;
+        }
+        const slot = Math.max(Date.now(), this.nextSlot);
+        const wait = slot - Date.now();
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        this.nextSlot = slot + MIN_INTERVAL_MS;
+        this.dailyCount += 1;
+
+        let best = 0;
+        for (let index = 1; index < this.queue.length; index++) {
+          const candidate = this.queue[index];
+          const current = this.queue[best];
+          if (candidate.priority > current.priority || (candidate.priority === current.priority && candidate.seq < current.seq)) {
+            best = index;
+          }
+        }
+        this.queue.splice(best, 1)[0].resolve();
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  private async request(params: Record<string, string>, opts: { priority?: number } = {}): Promise<EtherscanEnvelope> {
     const url = new URL(BASE_URL);
     url.search = new URLSearchParams({ chainid: CHAIN_ID, ...params, apikey: this.apiKey }).toString();
 
     let lastError: unknown;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      await this.schedule();
+      await this.schedule(opts.priority);
       try {
         const response = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
         if (!response.ok) throw new Error(`Etherscan request failed with ${response.status}`);

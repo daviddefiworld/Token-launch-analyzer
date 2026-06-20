@@ -1,6 +1,6 @@
 import { formatEther } from "ethers";
 import type { AttendeeClass, AttendeeNodeRole } from "../types.js";
-import type { EtherscanService } from "./EtherscanService.js";
+import { REQUEST_PRIORITY, type EtherscanService } from "./EtherscanService.js";
 import type { LaunchRepository } from "./LaunchRepository.js";
 
 // A single incoming ETH funding edge: `from` topped up the wallet (via a normal or an
@@ -297,8 +297,9 @@ export class WalletIntelService {
     let frontier = [seed];
 
     for (let hop = 0; hop < hops && frontier.length; hop++) {
-      // Incoming funders (cache-first, live within budget).
-      const { map, newLookups } = await this.resolveFunding(frontier, Math.max(0, remaining));
+      // Incoming funders (cache-first, live within budget). Interactive priority so the
+      // user's research jumps ahead of the background indexing/refresh loops on the limiter.
+      const { map, newLookups } = await this.resolveFunding(frontier, Math.max(0, remaining), REQUEST_PRIORITY.INTERACTIVE);
       remaining -= newLookups;
       for (const [addr, record] of map) if (!funding.has(addr)) funding.set(addr, record);
 
@@ -316,7 +317,7 @@ export class WalletIntelService {
       for (const addr of frontier) {
         if (remaining <= 0) break;
         try {
-          const outgoing = await this.etherscan.getOutgoingTransfers(addr, RESEARCH_OUT_FANOUT);
+          const outgoing = await this.etherscan.getOutgoingTransfers(addr, RESEARCH_OUT_FANOUT, { priority: REQUEST_PRIORITY.INTERACTIVE });
           remaining -= 1;
           for (const out of outgoing) discovered.push({ child: out.from, funder: addr, via: out.via, txHash: out.hash || null, from: "funded" });
         } catch (error) {
@@ -528,7 +529,7 @@ export class WalletIntelService {
   // Cache-first funding resolution. Up to `maxNew` uncached addresses are fetched from
   // Etherscan (2 requests each; the rest are left for a later pass once the cache warms).
   // Returns the resolved map plus the number of fresh wallet lookups performed.
-  private async resolveFunding(addresses: string[], maxNew: number): Promise<{ map: Map<string, WalletFunding>; newLookups: number }> {
+  private async resolveFunding(addresses: string[], maxNew: number, priority: number = REQUEST_PRIORITY.BACKGROUND): Promise<{ map: Map<string, WalletFunding>; newLookups: number }> {
     const keys = [...new Set(addresses.map((a) => a.toLowerCase()))];
     if (!keys.length) return { map: new Map(), newLookups: 0 };
 
@@ -540,7 +541,7 @@ export class WalletIntelService {
     const fetched: WalletFunding[] = [];
     for (const address of toFetch) {
       try {
-        const inflows = await this.etherscan.getIncomingTransfers(address, MAX_FUNDERS_PER_WALLET);
+        const inflows = await this.etherscan.getIncomingTransfers(address, MAX_FUNDERS_PER_WALLET, { priority });
         const primary = inflows[0];
         const record: WalletFunding = {
           address,
