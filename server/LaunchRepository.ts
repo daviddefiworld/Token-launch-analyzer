@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
-import type { AttendeeReport, CreatorPage, CreatorSort, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, TokenCreation } from "../types.js";
+import type { AttendeeReport, CreatorPage, CreatorSort, CreatorSummary, DailyAnalyticsPoint, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, TokenCreation, WalletLabel, WalletLabelKind } from "../types.js";
 import type { MarketData } from "./MarketDataService.js";
-import type { WalletFunding } from "./WalletIntelService.js";
+import type { FundingInflow, WalletFunding } from "./WalletIntelService.js";
 
 const INDEX_VERSION = 6;
 // A launch counts as having "real traction" once its 24h volume clears this threshold.
@@ -152,6 +152,19 @@ const attendeeReportSchema = new mongoose.Schema(
   { versionKey: false }
 );
 const AttendeeReportModel = mongoose.models.AttendeeReport || mongoose.model("AttendeeReport", attendeeReportSchema);
+
+// Manually-curated wallet labels (rug bots, watchlist). Global across DEXes — a bot is a bot
+// regardless of which factory its victims launched on.
+const walletLabelSchema = new mongoose.Schema<WalletLabel>(
+  {
+    address: { type: String, required: true, unique: true },
+    kind: { type: String, required: true, index: true },
+    note: { type: String, default: null },
+    createdAt: { type: String, required: true }
+  },
+  { versionKey: false }
+);
+const WalletLabelModel = mongoose.models.WalletLabel || mongoose.model<WalletLabel>("WalletLabel", walletLabelSchema);
 
 // One repository per DEX. All launch queries are scoped to the adapter's `dex` id and each
 // DEX keeps its own indexing checkpoint, so the three DEXes share collections without their
@@ -469,6 +482,58 @@ export class LaunchRepository {
       { $project: { count: { $size: "$wallets" } } }
     ]);
     return new Map(rows.map((row) => [row._id, row.count]));
+  }
+
+  // Every cached wallet whose funding graph includes one of `funders` as a direct source —
+  // i.e. the wallets these addresses funded. The reverse of getWalletFundings, served from
+  // the multikey "funders.from" index, so the research panel can walk outgoing edges for free
+  // once a bot's recipients have been investigated by prior launch analyses.
+  async getWalletsFundedBy(funders: string[]): Promise<{ address: string; funder: string; via: "external" | "internal"; txHash: string | null }[]> {
+    if (!funders.length) return [];
+    const funderSet = new Set(funders.map((funder) => funder.toLowerCase()));
+    const rows = await WalletFundingModel.find({ "funders.from": { $in: [...funderSet] } }).lean<WalletFunding[]>();
+    const edges: { address: string; funder: string; via: "external" | "internal"; txHash: string | null }[] = [];
+    for (const row of rows) {
+      const inflows: FundingInflow[] = row.funders?.length
+        ? row.funders
+        : row.fundingSource
+          ? [{ from: row.fundingSource, via: "external", txHash: row.fundingTxHash ?? "", value: "0", timeStamp: 0 }]
+          : [];
+      for (const inflow of inflows) {
+        if (funderSet.has(inflow.from)) edges.push({ address: row.address, funder: inflow.from, via: inflow.via, txHash: inflow.txHash || null });
+      }
+    }
+    return edges;
+  }
+
+  // ---- Manual wallet labels (rug bots / watchlist) ----
+
+  async getWalletLabels(): Promise<WalletLabel[]> {
+    return WalletLabelModel.find().sort({ createdAt: -1 }).lean<WalletLabel[]>();
+  }
+
+  async getWalletLabelMap(): Promise<Map<string, WalletLabelKind>> {
+    const rows = await WalletLabelModel.find().lean<WalletLabel[]>();
+    return new Map(rows.map((row) => [row.address.toLowerCase(), row.kind]));
+  }
+
+  async getAddressesByLabel(kind: WalletLabelKind): Promise<string[]> {
+    const rows = await WalletLabelModel.find({ kind }).lean<WalletLabel[]>();
+    return rows.map((row) => row.address.toLowerCase());
+  }
+
+  async setWalletLabel(address: string, kind: WalletLabelKind, note: string | null): Promise<WalletLabel> {
+    const record: WalletLabel = { address: address.toLowerCase(), kind, note, createdAt: new Date().toISOString() };
+    await WalletLabelModel.updateOne(
+      { address: record.address },
+      { $set: { kind: record.kind, note: record.note }, $setOnInsert: { createdAt: record.createdAt } },
+      { upsert: true }
+    );
+    return (await WalletLabelModel.findOne({ address: record.address }).lean<WalletLabel | null>()) ?? record;
+  }
+
+  async removeWalletLabel(address: string): Promise<void> {
+    await WalletLabelModel.deleteOne({ address: address.toLowerCase() });
   }
 
   // Real-trader (tx signer) cache. Hash -> signing EOA never changes, so it is cached forever.

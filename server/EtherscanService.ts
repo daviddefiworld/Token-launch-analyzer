@@ -182,6 +182,52 @@ export class EtherscanService {
     return [...byFunder.values()];
   }
 
+  // Every distinct address that `address` has sent ETH to, across normal and internal
+  // transactions, earliest first and capped at `maxRecipients`. The mirror image of
+  // getIncomingTransfers — used by the research panel to walk the wallets a bot funded.
+  // Costs exactly 2 API requests regardless of `maxRecipients`.
+  async getOutgoingTransfers(address: string, maxRecipients = 25): Promise<IncomingTransfer[]> {
+    const lower = address.toLowerCase();
+    const params = (action: string) => ({
+      module: "account",
+      action,
+      address,
+      startblock: "0",
+      endblock: "99999999",
+      page: "1",
+      offset: "1000",
+      sort: "asc" as const
+    });
+    const [normal, internal] = await Promise.all([
+      this.request(params("txlist")),
+      this.request(params("txlistinternal"))
+    ]);
+
+    // Each transfer's `from` is the recipient the seed funded (we keep the field name so the
+    // shape matches getIncomingTransfers and the funding-edge code can reuse it).
+    const transfers: IncomingTransfer[] = [];
+    const collect = (envelope: EtherscanEnvelope, via: "external" | "internal") => {
+      const rows = Array.isArray(envelope.result) ? envelope.result as Array<Record<string, string>> : [];
+      for (const tx of rows) {
+        if (tx.isError === "1") continue;
+        if (!tx.to || !tx.value || tx.value === "0") continue;
+        if (tx.from?.toLowerCase() !== lower) continue;
+        if (tx.to.toLowerCase() === lower) continue;
+        transfers.push({ from: tx.to.toLowerCase(), value: tx.value, timeStamp: Number(tx.timeStamp), hash: tx.hash, via });
+      }
+    };
+    collect(normal, "external");
+    collect(internal, "internal");
+
+    transfers.sort((left, right) => left.timeStamp - right.timeStamp);
+    const byRecipient = new Map<string, IncomingTransfer>();
+    for (const transfer of transfers) {
+      if (!byRecipient.has(transfer.from)) byRecipient.set(transfer.from, transfer);
+      if (byRecipient.size >= maxRecipients) break;
+    }
+    return [...byRecipient.values()];
+  }
+
   private async schedule(): Promise<void> {
     const now = Date.now();
     if (now - this.windowStart >= DAY_MS) {

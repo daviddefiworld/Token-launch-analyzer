@@ -11,7 +11,7 @@ import { PriceService } from "./PriceService.js";
 import { RpcMetricsProvider } from "./RpcMetricsProvider.js";
 import { WalletIntelService } from "./WalletIntelService.js";
 import { DEFAULT_DEX_ID, listAdapters } from "./skills/registry.js";
-import type { CreatorSort, DexInfo, LaunchSort } from "../types.js";
+import type { CreatorSort, DexInfo, LaunchSort, ResearchReport, WalletLabelKind } from "../types.js";
 
 const port = process.env.PORT || 4000;
 const startBlock = Number(process.env.BASE_START_BLOCK || 3200000);
@@ -230,6 +230,102 @@ app.post("/api/launches/:poolAddress/attendees/analyze", async (request, respons
       console.warn(`Attendee analysis failed for ${pool}: ${error instanceof Error ? error.message : error}`);
     });
     response.json({ started: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ---- Manual wallet labels (rug bots / watchlist) — global across DEXes ----
+
+const VALID_LABEL_KINDS: WalletLabelKind[] = ["rug-bot", "watch"];
+
+app.get("/api/labels", async (request, response, next) => {
+  try {
+    const repository = resolveAnalyzer(request).repository;
+    if (!repository) {
+      response.json([]);
+      return;
+    }
+    response.json(await repository.getWalletLabels());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/labels", async (request, response, next) => {
+  try {
+    const repository = resolveAnalyzer(request).repository;
+    if (!repository) {
+      response.status(503).json({ error: "Labeling requires live mode + MongoDB" });
+      return;
+    }
+    const address = typeof request.body?.address === "string" ? request.body.address.trim() : "";
+    const kind = request.body?.kind as WalletLabelKind;
+    const note = typeof request.body?.note === "string" ? request.body.note.trim() || null : null;
+    if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+      response.status(422).json({ error: "A valid 0x wallet address is required" });
+      return;
+    }
+    if (!VALID_LABEL_KINDS.includes(kind)) {
+      response.status(422).json({ error: `kind must be one of: ${VALID_LABEL_KINDS.join(", ")}` });
+      return;
+    }
+    response.json(await repository.setWalletLabel(address, kind, note));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/labels/:address", async (request, response, next) => {
+  try {
+    const repository = resolveAnalyzer(request).repository;
+    if (!repository) {
+      response.status(503).json({ error: "Labeling requires live mode + MongoDB" });
+      return;
+    }
+    await repository.removeWalletLabel(request.params.address);
+    response.json({ removed: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// On-demand research walk around one address (cache-first, bounded live fetch). Returns the
+// funding-graph connections and whether the address ties into any tagged rug bot's cluster.
+app.get("/api/research/:address", async (request, response, next) => {
+  try {
+    const analyzer = resolveAnalyzer(request);
+    const { repository, walletIntel } = analyzer;
+    if (!repository || !walletIntel) {
+      response.status(503).json({ error: "Address research requires live mode (BASESCAN_API_KEY + MongoDB)" });
+      return;
+    }
+    const address = request.params.address.trim().toLowerCase();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+      response.status(422).json({ error: "A valid 0x wallet address is required" });
+      return;
+    }
+    const labelMap = await repository.getWalletLabelMap();
+    const rugBots = [...labelMap.entries()].filter(([, kind]) => kind === "rug-bot").map(([wallet]) => wallet);
+
+    const research = await walletIntel.research(address, { rugBots });
+    const linkedRugBots = research.connections.filter((connection) => labelMap.get(connection.address) === "rug-bot").map((connection) => connection.address);
+    const seedLabel = labelMap.get(address) ?? null;
+    const rugConnected = seedLabel === "rug-bot" || research.connections.some((connection) => connection.inCluster && labelMap.get(connection.address) === "rug-bot");
+
+    const report: ResearchReport = {
+      address: research.address,
+      label: seedLabel,
+      rugConnected,
+      connectionCount: research.connections.length,
+      linkedRugBots,
+      connections: research.connections.map((connection) => ({ ...connection, label: labelMap.get(connection.address) ?? null })),
+      graph: { nodes: research.graph.nodes.map((node) => ({ ...node, volumeUsd: null })), edges: research.graph.edges },
+      walletsExplored: research.walletsExplored,
+      complete: research.complete,
+      updatedAt: new Date().toISOString()
+    };
+    response.json(report);
   } catch (error) {
     next(error);
   }

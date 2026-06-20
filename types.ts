@@ -44,8 +44,20 @@ export interface Launch {
 //   creator-funded — funded directly by the creator wallet
 //   same-funder  — shares the creator's first funding wallet (a private funder)
 //   linked       — connected to the creator's cluster through a multi-hop funding chain
+//   rug-bot      — the wallet is a manually-tagged rug bot, or connected to one's cluster
 //   external     — independent funding (a real, external participant)
-export type AttendeeClass = "creator" | "creator-funded" | "same-funder" | "linked" | "external";
+export type AttendeeClass = "creator" | "creator-funded" | "same-funder" | "linked" | "rug-bot" | "external";
+
+// Manually-curated wallet labels. Tagging a "rug-bot" seed makes its entire funding cluster
+// be treated as insider during attendee analysis (in addition to the creator's own cluster).
+export type WalletLabelKind = "rug-bot" | "watch";
+
+export interface WalletLabel {
+  address: string;
+  kind: WalletLabelKind;
+  note: string | null;
+  createdAt: string;
+}
 
 export interface AttendeeBuyer {
   address: string;
@@ -76,7 +88,9 @@ export interface AttendeeCluster {
 // Funding-relationship graph for visualization: wallets are nodes, each edge points from a
 // wallet to the wallet that first funded it. "funder" nodes are wallets that appear only as
 // funders (not themselves traders).
-export type AttendeeNodeRole = "creator" | "insider" | "external" | "coordinated" | "funder";
+// "seed" and "rug" are research/manual-label roles: "seed" is the address being researched,
+// "rug" is a manually-tagged rug bot.
+export type AttendeeNodeRole = "creator" | "insider" | "external" | "coordinated" | "funder" | "seed" | "rug";
 
 export interface AttendeeGraphNode {
   address: string;
@@ -237,4 +251,46 @@ export interface RpcUsage {
   totalErrors: number;
   startedAt: string;
   methods: RpcMethodUsage[];
+}
+
+// ---- Address research panel ----
+
+// How a wallet relates to the researched seed in the ETH funding graph.
+//   seed   — the address being researched
+//   funder — an ancestor that (directly or via a chain) funded the seed
+//   funded — a descendant the seed (directly or via a chain) funded
+//   both   — reachable from the seed in both directions
+export type ResearchDirection = "seed" | "funder" | "funded" | "both";
+
+export interface ResearchConnection {
+  address: string;
+  direction: ResearchDirection;
+  // Shortest funding-graph distance (in hops) from the seed.
+  hops: number;
+  // A manual label on this exact wallet, if one exists.
+  label: WalletLabelKind | null;
+  // Whether this wallet shares the seed's funding cluster (a strong sybil signal).
+  inCluster: boolean;
+  // The funding edge that first reached this wallet from the seed's side.
+  via: "external" | "internal" | null;
+  txHash: string | null;
+}
+
+// On-demand walk of the ETH funding graph around one address — both the wallets that funded
+// it and the wallets it funded, several hops out — independent of any launch. Surfaces the
+// deep bot connections the launch-anchored classifier can miss.
+export interface ResearchReport {
+  address: string;
+  label: WalletLabelKind | null;
+  // True if the seed itself, or any wallet in its cluster, is a tagged rug bot.
+  rugConnected: boolean;
+  connectionCount: number;
+  // Tagged rug bots discovered within the explored graph.
+  linkedRugBots: string[];
+  connections: ResearchConnection[];
+  graph: AttendeeGraph;
+  walletsExplored: number;
+  // False when the lookup budget was exhausted before the walk finished.
+  complete: boolean;
+  updatedAt: string;
 }

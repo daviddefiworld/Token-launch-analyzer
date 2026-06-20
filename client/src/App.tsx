@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PropsWithChildren, type ReactNode } from "react";
-import type { ApiStatus, AttendeeBuyer, AttendeeGraph, AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, IndexerState, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, RpcUsage, Trade, TradeSide } from "../../types.js";
+import type { ApiStatus, AttendeeBuyer, AttendeeGraph, AttendeeReport, CreatorPage, CreatorProfile, CreatorSort, CreatorSummary, DailyAnalyticsPoint, DexInfo, IndexerState, Launch, LaunchDailyAnalytics, LaunchPage, LaunchSort, LaunchStats, PoolType, ResearchConnection, ResearchReport, RpcUsage, Trade, TradeSide, WalletLabel } from "../../types.js";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/$/, "");
 
@@ -77,6 +77,7 @@ const ATTENDEE_LABELS: Record<AttendeeBuyer["classification"], string> = {
   "creator-funded": "creator-funded",
   "same-funder": "same funder",
   linked: "linked",
+  "rug-bot": "rug bot",
   external: "external"
 };
 
@@ -112,7 +113,7 @@ function App() {
   const [createdWithinDays, setCreatedWithinDays] = useState("");
   const [tradeFilter, setTradeFilter] = useState<TradeSide | "all">("all");
   const [flowOpen, setFlowOpen] = useState(true);
-  const [page, setPage] = useState<"overview" | "creators" | "analytics" | "rpc">("overview");
+  const [page, setPage] = useState<"overview" | "creators" | "research" | "analytics" | "rpc">("overview");
   const [rpcUsage, setRpcUsage] = useState<RpcUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -345,6 +346,7 @@ function App() {
         <nav>
           <button onClick={() => setPage("overview")} className={`nav-item ${page === "overview" ? "active" : ""}`}><GridIcon /> Overview</button>
           <button onClick={() => setPage("creators")} className={`nav-item ${page === "creators" ? "active" : ""}`}><UsersIcon /> Creators</button>
+          <button onClick={() => setPage("research")} className={`nav-item ${page === "research" ? "active" : ""}`}><TargetIcon /> Research</button>
           <button onClick={() => setPage("analytics")} className={`nav-item ${page === "analytics" ? "active" : ""}`}><BarChartIcon /> Analytics</button>
           <button onClick={() => setPage("rpc")} className={`nav-item ${page === "rpc" ? "active" : ""}`}><PulseIcon /> RPC usage</button>
         </nav>
@@ -366,7 +368,7 @@ function App() {
       </aside>
 
       <section className="workspace">
-        {page === "rpc" ? <RpcUsagePage usage={rpcUsage} /> : page === "creators" ? <CreatorsPage dex={dex} onError={setError} /> : page === "analytics" ? <AnalyticsPage dex={dex} onError={setError} /> : <>
+        {page === "rpc" ? <RpcUsagePage usage={rpcUsage} /> : page === "creators" ? <CreatorsPage dex={dex} onError={setError} /> : page === "research" ? <ResearchPage dex={dex} mode={status?.mode} onError={setError} /> : page === "analytics" ? <AnalyticsPage dex={dex} onError={setError} /> : <>
         <header className="topbar">
           <div>
             <span className="eyebrow">{dexLabel} · {currentDex?.network ?? "Base"}</span>
@@ -728,7 +730,9 @@ const ROLE_COLORS: Record<string, string> = {
   insider: "#ff9b9b",
   coordinated: "#f4c07a",
   external: "#7ff0aa",
-  funder: "#8aa0bd"
+  funder: "#8aa0bd",
+  seed: "#7ab8ff",
+  rug: "#c060ff"
 };
 
 // A small deterministic force-directed layout (circle init, no randomness) for the wallet
@@ -797,7 +801,15 @@ function computeGraphLayout(graph: AttendeeGraph, width: number, height: number)
   return { nodes: laidOut, edges: layoutEdges };
 }
 
-function WalletGraph({ graph }: { graph: AttendeeGraph }) {
+const ATTENDEE_LEGEND = [
+  { role: "creator", label: "Creator" },
+  { role: "insider", label: "Insider" },
+  { role: "coordinated", label: "Sniper ring" },
+  { role: "external", label: "External" },
+  { role: "funder", label: "Funder" }
+];
+
+function WalletGraph({ graph, legend = ATTENDEE_LEGEND }: { graph: AttendeeGraph; legend?: { role: string; label: string }[] }) {
   const width = 660;
   const height = 380;
   const layout = useMemo(() => computeGraphLayout(graph, width, height), [graph]);
@@ -823,11 +835,9 @@ function WalletGraph({ graph }: { graph: AttendeeGraph }) {
         ))}
       </svg>
       <div className="graph-legend">
-        <span><i style={{ background: ROLE_COLORS.creator }} /> Creator</span>
-        <span><i style={{ background: ROLE_COLORS.insider }} /> Insider</span>
-        <span><i style={{ background: ROLE_COLORS.coordinated }} /> Sniper ring</span>
-        <span><i style={{ background: ROLE_COLORS.external }} /> External</span>
-        <span><i style={{ background: ROLE_COLORS.funder }} /> Funder</span>
+        {legend.map((item) => (
+          <span key={item.role}><i style={{ background: ROLE_COLORS[item.role] ?? "#8aa0bd" }} /> {item.label}</span>
+        ))}
       </div>
     </div>
   );
@@ -946,6 +956,225 @@ function AttendeeIntelPanel({
       )}
     </section>
   );
+}
+
+const RESEARCH_LEGEND = [
+  { role: "seed", label: "Researched" },
+  { role: "rug", label: "Rug bot" },
+  { role: "insider", label: "Same cluster" },
+  { role: "funder", label: "Other wallet" }
+];
+
+const DIRECTION_LABELS: Record<ResearchConnection["direction"], string> = {
+  seed: "seed",
+  funder: "funds it",
+  funded: "funded by it",
+  both: "both ways"
+};
+
+const isAddress = (value: string) => /^0x[0-9a-fA-F]{40}$/.test(value.trim());
+
+function ResearchPage({ dex, mode, onError }: { dex: string; mode?: "demo" | "live"; onError: (message: string) => void }) {
+  const [input, setInput] = useState("");
+  const [address, setAddress] = useState("");
+  const [report, setReport] = useState<ResearchReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [labels, setLabels] = useState<WalletLabel[]>([]);
+  const [note, setNote] = useState("");
+  const [tagging, setTagging] = useState(false);
+
+  const loadLabels = useCallback(() => fetchJson<WalletLabel[]>(withDex("/api/labels", dex))
+    .then(setLabels)
+    .catch(() => undefined), [dex]);
+
+  useEffect(() => { void loadLabels(); }, [loadLabels]);
+
+  const runResearch = useCallback(async (target: string) => {
+    if (!isAddress(target)) {
+      onError("Enter a valid 0x wallet address to research.");
+      return;
+    }
+    setLoading(true);
+    setAddress(target.toLowerCase());
+    try {
+      const result = await fetchJson<ResearchReport>(withDex(`/api/research/${target.trim()}`, dex));
+      setReport(result);
+    } catch (requestError) {
+      onError((requestError as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [dex, onError]);
+
+  const setLabel = useCallback(async (target: string, kind: "rug-bot" | null) => {
+    setTagging(true);
+    try {
+      if (kind === null) {
+        await fetchJson(withDex(`/api/labels/${target}`, dex), { method: "DELETE" });
+      } else {
+        await fetchJson(withDex("/api/labels", dex), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address: target, kind, note: note.trim() || undefined })
+        });
+      }
+      await loadLabels();
+      // Re-run so the cluster reflects the new tag immediately.
+      if (address) await runResearch(address);
+    } catch (requestError) {
+      onError((requestError as Error).message);
+    } finally {
+      setTagging(false);
+    }
+  }, [address, dex, loadLabels, note, onError, runResearch]);
+
+  const seedIsRug = report?.label === "rug-bot";
+  const clusterMembers = report?.connections.filter((connection) => connection.inCluster).length ?? 0;
+
+  return <>
+    <header className="topbar">
+      <div>
+        <span className="eyebrow">Funding-graph forensics</span>
+        <h1>Address research</h1>
+      </div>
+    </header>
+
+    {mode !== "live" && (
+      <div className="error-banner">Address research runs in live mode (needs BASESCAN_API_KEY + MongoDB).</div>
+    )}
+
+    <section className="panel research-input-panel">
+      <div className="panel-heading compact">
+        <div>
+          <span className="eyebrow">Trace a wallet</span>
+          <h2>Walk the funding graph</h2>
+        </div>
+        <TargetIcon />
+      </div>
+      <form
+        className="research-form"
+        onSubmit={(event) => { event.preventDefault(); void runResearch(input); }}
+      >
+        <label className="search-box research-search">
+          <SearchIcon />
+          <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="0x wallet address to investigate" spellCheck={false} />
+        </label>
+        <button type="submit" className="primary-button" disabled={loading || !isAddress(input)}>
+          {loading ? "Researching..." : "Research"}
+        </button>
+      </form>
+      <p className="muted research-hint">
+        Walks both directions of the ETH funding graph (who funded this wallet, and who it funded), several hops out — cache-first with a bounded live BaseScan fetch. Tag a wallet as a rug bot to fold its whole cluster into insider detection across every launch.
+      </p>
+    </section>
+
+    <section className="analyst-grid research-grid">
+      <div className="panel research-result-panel">
+        {loading ? (
+          <div className="empty-state">Walking the funding graph...</div>
+        ) : !report ? (
+          <div className="empty-state">Enter an address above to map its funding connections.</div>
+        ) : (
+          <>
+            <div className="research-summary">
+              <div className="wallet-address">
+                <strong className="mono">{short(report.address, 10)}</strong>
+                <a href={baseScanAddress(report.address)} target="_blank" rel="noreferrer"><ArrowIcon /></a>
+                {seedIsRug && <span className="attendee-badge rug-bot research-seed-tag">rug bot</span>}
+                {report.rugConnected && !seedIsRug && <span className="attendee-badge rug-bot research-seed-tag">rug-connected</span>}
+              </div>
+              <div className="research-actions">
+                {seedIsRug ? (
+                  <button type="button" className="secondary-button" disabled={tagging} onClick={() => void setLabel(report.address, null)}>
+                    Remove rug-bot tag
+                  </button>
+                ) : (
+                  <>
+                    <input className="number-control research-note" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Note (optional)" />
+                    <button type="button" className="danger-button" disabled={tagging} onClick={() => void setLabel(report.address, "rug-bot")}>
+                      Tag as rug bot
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <section className="metrics attendee-metrics">
+              <Metric label="Wallets explored" value={report.walletsExplored} hint={report.complete ? "Full walk" : "Budget capped"} icon={<TargetIcon />} />
+              <Metric label="Connections" value={report.connectionCount} hint="Funder + funded links" icon={<UsersIcon />} />
+              <Metric label="In cluster" value={clusterMembers} hint="Share its private funders" icon={<WalletIcon />} danger={clusterMembers > 0} />
+              <Metric label="Linked rug bots" value={report.linkedRugBots.length} hint={report.rugConnected ? "Tied to a tagged bot" : "None found"} icon={<ShieldIcon />} danger={report.linkedRugBots.length > 0} />
+            </section>
+
+            <div className="graph-section">
+              <div className="graph-heading">
+                <span className="eyebrow">Funding relationships</span>
+                {report.graph.nodes.length > 1 && (
+                  <span className="muted">{report.graph.nodes.length} wallets · {report.graph.edges.length} funding links</span>
+                )}
+              </div>
+              {report.graph.nodes.length > 1 ? (
+                <WalletGraph graph={report.graph} legend={RESEARCH_LEGEND} />
+              ) : (
+                <p className="muted graph-empty">No funding connections found for this wallet in the cache or within the live fetch budget.</p>
+              )}
+            </div>
+
+            <div className="attendee-table table-shell">
+              <div className="table-row table-head research-row-head">
+                <span>Wallet</span><span>Relation</span><span>Hops</span><span>Cluster</span><span>Tx</span>
+              </div>
+              {report.connections.slice(0, 40).map((connection) => (
+                <div className="table-row research-conn-row" key={connection.address}>
+                  <span>
+                    <WalletLink address={connection.address} size={8} />
+                    {connection.label === "rug-bot" && <b className="attendee-badge rug-bot inline-badge">rug</b>}
+                  </span>
+                  <span><b className={`relation-badge ${connection.direction}`}>{DIRECTION_LABELS[connection.direction]}</b></span>
+                  <span className="muted">{connection.hops}</span>
+                  <span>{connection.inCluster ? <b className="cluster-yes">yes</b> : <span className="muted">no</span>}</span>
+                  <span>
+                    {connection.txHash
+                      ? <a className="tx-link" href={`https://basescan.org/tx/${connection.txHash}`} target="_blank" rel="noreferrer" title="Funding transaction"><ArrowIcon /></a>
+                      : <span className="muted">—</span>}
+                  </span>
+                </div>
+              ))}
+              {report.connectionCount > 40 && <div className="muted attendee-note">Showing the 40 strongest of {report.connectionCount} connections.</div>}
+            </div>
+          </>
+        )}
+      </div>
+
+      <aside className="detail-column">
+        <section className="panel labels-panel">
+          <div className="panel-heading compact">
+            <div>
+              <span className="eyebrow">Manual labels</span>
+              <h2>Tagged rug bots</h2>
+            </div>
+            <ShieldIcon />
+          </div>
+          {labels.length === 0 ? (
+            <div className="empty-state compact">No wallets tagged yet. Research an address and tag it as a rug bot.</div>
+          ) : (
+            <div className="labels-list">
+              {labels.map((label) => (
+                <div className="label-item" key={label.address}>
+                  <button type="button" className="label-address" onClick={() => { setInput(label.address); void runResearch(label.address); }} title="Research this wallet">
+                    <span className={`attendee-badge ${label.kind === "rug-bot" ? "rug-bot" : "linked"}`}>{label.kind}</span>
+                    <span className="mono">{short(label.address, 8)}</span>
+                  </button>
+                  {label.note && <small className="label-note">{label.note}</small>}
+                  <button type="button" className="label-remove" disabled={tagging} onClick={() => void setLabel(label.address, null)} title="Remove tag">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </aside>
+    </section>
+  </>;
 }
 
 function AnalyticsPage({ dex, onError }: { dex: string; onError: (message: string) => void }) {
@@ -1133,5 +1362,6 @@ const SearchIcon = () => <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4
 const ArrowIcon = () => <Icon><path d="M7 17 17 7" /><path d="M8 7h9v9" /></Icon>;
 const CaretIcon = () => <Icon><path d="m6 9 6 6 6-6" /></Icon>;
 const RefreshIcon = () => <Icon><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></Icon>;
+const TargetIcon = () => <Icon><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="0.5" /></Icon>;
 
 export default App;

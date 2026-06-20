@@ -220,7 +220,9 @@ export class MarketDataService {
     }
 
     const traders: TraderActivity[] = [...byTrader.entries()].map(([address, value]) => ({ address, ...value }));
-    const result = await this.walletIntel.classify(launch.creator, traders, { maxNewLookups: opts.maxNewLookups });
+    // Manually-tagged rug bots fold their whole funding cluster into the insider set.
+    const rugBots = this.repository ? await this.repository.getAddressesByLabel("rug-bot") : [];
+    const result = await this.walletIntel.classify(launch.creator, traders, { maxNewLookups: opts.maxNewLookups, rugBots });
 
     const price = this.priceService ? await this.priceService.getQuotePriceUsd(launch.quoteAddress) : null;
     const toUsd = (raw: bigint): number | null => (price == null ? null : Number(formatUnits(raw, quoteDecimals)) * price);

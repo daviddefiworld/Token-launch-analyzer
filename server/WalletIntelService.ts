@@ -79,6 +79,23 @@ export interface IntelResult {
   complete: boolean;
 }
 
+export interface ResearchConnectionRaw {
+  address: string;
+  direction: "seed" | "funder" | "funded" | "both";
+  hops: number;
+  inCluster: boolean;
+  via: "external" | "internal" | null;
+  txHash: string | null;
+}
+
+export interface IntelResearch {
+  address: string;
+  connections: ResearchConnectionRaw[];
+  graph: IntelGraph;
+  walletsExplored: number;
+  complete: boolean;
+}
+
 // A funder that has seeded this many distinct cached wallets is treated as a public
 // disperser (CEX hot wallet, bridge, router) rather than a sybil link. Tunable; high
 // enough that a creator dispersing to a few dozen bots is still flagged.
@@ -95,6 +112,16 @@ const MAX_FUNDERS_PER_WALLET = 12;
 // Each new wallet costs 2 Etherscan requests, so this is bounded by the lookup budget and
 // by the funding cache (re-walked hops are free once warm).
 const MAX_FUNDING_HOPS = 3;
+// ---- Address research panel (bidirectional manual walk) ----
+// How many hops to walk out from the seed in each direction.
+const RESEARCH_HOPS = 4;
+// Lookup budget for one research walk (each incoming/outgoing fetch is one unit, ~2 requests).
+const RESEARCH_MAX_LOOKUPS = 120;
+// Distinct recipients kept per wallet when walking outgoing (funded) edges live.
+const RESEARCH_OUT_FANOUT = 25;
+// Caps so dense bot fan-outs stay legible / payloads stay bounded.
+const RESEARCH_GRAPH_MAX_NODES = 160;
+const RESEARCH_MAX_CONNECTIONS = 300;
 // Known public funders on Base whose shared use is meaningless as a sybil signal. The
 // out-degree heuristic catches the rest as the cache grows; extend this seed as needed.
 const SEED_PUBLIC_FUNDERS = new Set<string>([
@@ -147,14 +174,22 @@ export class WalletIntelService {
   // insider (the creator's cluster — wash trading) vs external (real demand). Walks the full
   // ETH funding graph: every wallet's distinct funders (normal + contract/internal), out to
   // MAX_FUNDING_HOPS, so any path connecting a buyer to the founder marks it insider.
-  async classify(creator: string, traders: TraderActivity[], opts: { maxNewLookups?: number } = {}): Promise<IntelResult> {
+  async classify(creator: string, traders: TraderActivity[], opts: { maxNewLookups?: number; rugBots?: string[] } = {}): Promise<IntelResult> {
     const creatorKey = creator.toLowerCase();
     let remaining = opts.maxNewLookups ?? this.maxNewLookups;
+    // Manually-tagged rug bots: their whole funding cluster is treated as insider, in
+    // addition to the creator's. Seeding them into the core frontier walks their funding
+    // graph too, so multi-hop links (rug bot -> intermediary -> buyer) are caught.
+    const rugBots = new Set((opts.rugBots ?? []).map((address) => address.toLowerCase()));
 
     // Resolve funding creator-first, then by descending volume so the most impactful
     // buyers are classified even when the lookup budget is exhausted.
     const ordered = [...traders].sort((a, b) => (b.quoteRaw > a.quoteRaw ? 1 : b.quoteRaw < a.quoteRaw ? -1 : 0));
-    const coreAddresses = [creatorKey, ...ordered.map((t) => t.address).filter((a) => a !== creatorKey)];
+    const coreAddresses = [
+      creatorKey,
+      ...ordered.map((t) => t.address).filter((a) => a !== creatorKey),
+      ...[...rugBots].filter((a) => a !== creatorKey)
+    ];
 
     // Walk funder hops outward from the core wallets. Each hop resolves the funders
     // discovered by the previous one, within the remaining lookup budget; the funding cache
@@ -184,8 +219,10 @@ export class WalletIntelService {
     // Out-degree of every funder we touched, to flag public dispersers (never the creator).
     const allFunders = [...new Set([...funding.values()].flatMap((record) => this.fundersOf(record).map((inflow) => inflow.from)))];
     const funderCounts = await this.repository.getFunderCounts(allFunders);
+    // A tagged rug bot is a deliberate target, never a "public disperser", even when it has
+    // seeded many wallets — so exempt it (like the creator) from the out-degree heuristic.
     const isPublic = (funder: string): boolean =>
-      funder !== creatorKey && (SEED_PUBLIC_FUNDERS.has(funder) || (funderCounts.get(funder) ?? 0) >= PUBLIC_FUNDER_THRESHOLD);
+      funder !== creatorKey && !rugBots.has(funder) && (SEED_PUBLIC_FUNDERS.has(funder) || (funderCounts.get(funder) ?? 0) >= PUBLIC_FUNDER_THRESHOLD);
 
     // Union each wallet with every (non-public) funder it ever received ETH from, so wallets
     // that share any private funder — directly or through a chain — merge into one cluster.
@@ -196,6 +233,9 @@ export class WalletIntelService {
       }
     }
     const creatorRoot = dsu.find(creatorKey);
+    // Cluster roots that contain a tagged rug bot — any wallet under one of these roots is
+    // insider by association, just like the creator's own cluster.
+    const rugRoots = new Set([...rugBots].map((bot) => dsu.find(bot)));
 
     let insiderQuoteRaw = 0n;
     let totalQuoteRaw = 0n;
@@ -209,7 +249,7 @@ export class WalletIntelService {
       const record = funding.get(trader.address);
       const funders = this.fundersOf(record);
       const primary = funders[0] ?? null;
-      const classification = this.classifyOne(trader.address, creatorKey, creatorFunders, funders, dsu, creatorRoot, isPublic);
+      const classification = this.classifyOne(trader.address, creatorKey, creatorFunders, funders, dsu, creatorRoot, isPublic, rugBots, rugRoots);
       if (!record) complete = false;
       if (classification === "external") externalBuyerCount += 1;
       else { insiderBuyerCount += 1; insiderQuoteRaw += trader.quoteRaw; }
@@ -228,9 +268,136 @@ export class WalletIntelService {
     });
 
     const clusters = this.buildClusters(classified, funding, creatorFunders, isPublic);
-    const graph = this.buildGraph(classified, funding, creatorKey, creatorRoot, dsu, isPublic);
+    const graph = this.buildGraph(classified, funding, creatorKey, creatorRoot, dsu, isPublic, rugBots, rugRoots);
     const creatorFundingSource = [...creatorFunders][0] ?? null;
     return { creatorFundingSource, buyers: classified, clusters, graph, insiderQuoteRaw, totalQuoteRaw, insiderBuyerCount, externalBuyerCount, complete };
+  }
+
+  // On-demand bidirectional walk of the ETH funding graph around one address, independent of
+  // any launch. Walks both incoming funders (cache + live) and outgoing funded wallets
+  // (cached reverse edges + a bounded live fetch), out to RESEARCH_HOPS, so the deep bot
+  // connections the launch-anchored classifier misses can be surfaced manually. Tagged rug
+  // bots are exempt from the public-disperser heuristic so a prolific bot's cluster holds.
+  async research(address: string, opts: { maxNewLookups?: number; hops?: number; rugBots?: string[] } = {}): Promise<IntelResearch> {
+    const seed = address.toLowerCase();
+    const hops = opts.hops ?? RESEARCH_HOPS;
+    let remaining = opts.maxNewLookups ?? RESEARCH_MAX_LOOKUPS;
+    const rugBots = new Set((opts.rugBots ?? []).map((bot) => bot.toLowerCase()));
+
+    type Dir = "seed" | "funder" | "funded" | "both";
+    const meta = new Map<string, { direction: Dir; hops: number; via: "external" | "internal" | null; txHash: string | null }>();
+    meta.set(seed, { direction: "seed", hops: 0, via: null, txHash: null });
+
+    // Every discovered funding edge: `funder` sent ETH to `child`. Deduped by child|funder.
+    const edges: { child: string; funder: string; via: "external" | "internal"; txHash: string | null }[] = [];
+    const edgeKeys = new Set<string>();
+    const funding = new Map<string, WalletFunding>();
+
+    const seen = new Set<string>([seed]);
+    let frontier = [seed];
+
+    for (let hop = 0; hop < hops && frontier.length; hop++) {
+      // Incoming funders (cache-first, live within budget).
+      const { map, newLookups } = await this.resolveFunding(frontier, Math.max(0, remaining));
+      remaining -= newLookups;
+      for (const [addr, record] of map) if (!funding.has(addr)) funding.set(addr, record);
+
+      // Outgoing edges: cached reverse index (free) plus a bounded live fetch so a cold bot
+      // — never touched by prior launch analyses — still reveals the wallets it funded.
+      const discovered: { child: string; funder: string; via: "external" | "internal"; txHash: string | null; from: Dir }[] = [];
+      for (const addr of frontier) {
+        for (const inflow of this.fundersOf(funding.get(addr))) {
+          discovered.push({ child: addr, funder: inflow.from, via: inflow.via, txHash: inflow.txHash || null, from: "funder" });
+        }
+      }
+      for (const edge of await this.repository.getWalletsFundedBy(frontier)) {
+        discovered.push({ child: edge.address, funder: edge.funder, via: edge.via, txHash: edge.txHash, from: "funded" });
+      }
+      for (const addr of frontier) {
+        if (remaining <= 0) break;
+        try {
+          const outgoing = await this.etherscan.getOutgoingTransfers(addr, RESEARCH_OUT_FANOUT);
+          remaining -= 1;
+          for (const out of outgoing) discovered.push({ child: out.from, funder: addr, via: out.via, txHash: out.hash || null, from: "funded" });
+        } catch (error) {
+          console.warn(`Outgoing lookup failed for ${addr}: ${error instanceof Error ? error.message : error}`);
+        }
+      }
+
+      const next = new Set<string>();
+      for (const edge of discovered) {
+        const key = `${edge.child}|${edge.funder}`;
+        if (!edgeKeys.has(key)) {
+          edgeKeys.add(key);
+          edges.push({ child: edge.child, funder: edge.funder, via: edge.via, txHash: edge.txHash });
+        }
+        // The neighbor is whichever endpoint isn't the frontier wallet that produced the edge.
+        const neighbor = edge.from === "funder" ? edge.funder : edge.child;
+        const existing = meta.get(neighbor);
+        if (!existing) {
+          meta.set(neighbor, { direction: edge.from, hops: hop + 1, via: edge.via, txHash: edge.txHash });
+        } else if (existing.direction !== "seed" && existing.direction !== edge.from) {
+          existing.direction = "both";
+        }
+        if (!seen.has(neighbor)) { seen.add(neighbor); next.add(neighbor); }
+      }
+      frontier = [...next];
+    }
+
+    // The walk completed if it exhausted the graph without running out of budget mid-way.
+    const complete = frontier.length === 0 && remaining > 0;
+
+    // Cluster membership: treat funding edges as undirected, drop public dispersers (but
+    // never the seed or a tagged rug bot), and ask which wallets share the seed's component.
+    const funderCounts = await this.repository.getFunderCounts([...new Set(edges.map((edge) => edge.funder))]);
+    const isPublic = (funder: string): boolean =>
+      funder !== seed && !rugBots.has(funder) && (SEED_PUBLIC_FUNDERS.has(funder) || (funderCounts.get(funder) ?? 0) >= PUBLIC_FUNDER_THRESHOLD);
+    const dsu = new DisjointSet();
+    for (const edge of edges) if (!isPublic(edge.funder)) dsu.union(edge.child, edge.funder);
+    const seedRoot = dsu.find(seed);
+    const inCluster = (addr: string): boolean => dsu.find(addr) === seedRoot;
+
+    const connections: ResearchConnectionRaw[] = [...meta.entries()]
+      .filter(([addr]) => addr !== seed)
+      .map(([addr, info]) => ({ address: addr, direction: info.direction, hops: info.hops, inCluster: inCluster(addr), via: info.via, txHash: info.txHash }))
+      // Cluster members first, then by closeness, so the strongest links surface at the top.
+      .sort((a, b) => Number(b.inCluster) - Number(a.inCluster) || a.hops - b.hops)
+      .slice(0, RESEARCH_MAX_CONNECTIONS);
+
+    const graph = this.buildResearchGraph(seed, connections, edges, rugBots, inCluster);
+    return { address: seed, connections, graph, walletsExplored: meta.size, complete };
+  }
+
+  // Node/edge graph for the research panel. Includes the seed plus the highest-priority
+  // connections (cluster members and rug bots first) up to RESEARCH_GRAPH_MAX_NODES.
+  private buildResearchGraph(
+    seed: string,
+    connections: ResearchConnectionRaw[],
+    edges: { child: string; funder: string }[],
+    rugBots: Set<string>,
+    inCluster: (addr: string) => boolean
+  ): IntelGraph {
+    const ranked = [...connections].sort((a, b) =>
+      Number(rugBots.has(b.address)) - Number(rugBots.has(a.address)) ||
+      Number(b.inCluster) - Number(a.inCluster) ||
+      a.hops - b.hops
+    );
+    const included = new Set<string>([seed]);
+    for (const connection of ranked) {
+      if (included.size >= RESEARCH_GRAPH_MAX_NODES) break;
+      included.add(connection.address);
+    }
+
+    const graphEdges = edges
+      .filter((edge) => included.has(edge.child) && included.has(edge.funder))
+      .map((edge) => ({ from: edge.child, to: edge.funder }));
+
+    const nodes: IntelGraphNode[] = [...included].map((address) => {
+      if (address === seed) return { address, role: "seed", clusterId: null };
+      if (rugBots.has(address)) return { address, role: "rug", clusterId: null };
+      return { address, role: inCluster(address) ? "insider" : "funder", clusterId: null };
+    });
+    return { nodes, edges: graphEdges };
   }
 
   // All funders of a wallet, tolerating legacy cached docs that predate the `funders` array
@@ -252,7 +419,9 @@ export class WalletIntelService {
     creatorKey: string,
     creatorRoot: string,
     dsu: DisjointSet,
-    isPublic: (funder: string) => boolean
+    isPublic: (funder: string) => boolean,
+    rugBots: Set<string>,
+    rugRoots: Set<string>
   ): IntelGraph {
     const fundersOfAddr = (address: string): string[] =>
       this.fundersOf(funding.get(address)).map((inflow) => inflow.from).filter((from) => !isPublic(from));
@@ -277,13 +446,19 @@ export class WalletIntelService {
     const byAddress = new Map(buyers.map((buyer) => [buyer.address, buyer]));
     const nodes: IntelGraphNode[] = [...included].map((address) => {
       if (address === creatorKey) return { address, role: "creator", clusterId: 0 };
+      if (rugBots.has(address)) return { address, role: "rug", clusterId: null };
       const buyer = byAddress.get(address);
       if (buyer) {
-        const role: AttendeeNodeRole = buyer.classification === "external" ? (buyer.clusterId != null ? "coordinated" : "external") : "insider";
+        const role: AttendeeNodeRole = buyer.classification === "rug-bot"
+          ? "rug"
+          : buyer.classification === "external"
+            ? (buyer.clusterId != null ? "coordinated" : "external")
+            : "insider";
         return { address, role, clusterId: buyer.clusterId };
       }
-      // Funder-only node: red if it sits inside the creator's cluster, neutral otherwise.
-      return { address, role: dsu.find(address) === creatorRoot ? "insider" : "funder", clusterId: null };
+      // Funder-only node: red if it sits inside the creator's or a rug bot's cluster.
+      const root = dsu.find(address);
+      return { address, role: root === creatorRoot || rugRoots.has(root) ? "insider" : "funder", clusterId: null };
     });
 
     return { nodes, edges };
@@ -296,9 +471,13 @@ export class WalletIntelService {
     funders: FundingInflow[],
     dsu: DisjointSet,
     creatorRoot: string,
-    isPublic: (funder: string) => boolean
+    isPublic: (funder: string) => boolean,
+    rugBots: Set<string>,
+    rugRoots: Set<string>
   ): AttendeeClass {
     if (address === creatorKey) return "creator";
+    // A manually-tagged rug bot, or any wallet sharing its funding cluster, is insider.
+    if (rugBots.has(address) || rugRoots.has(dsu.find(address))) return "rug-bot";
     if (funders.some((inflow) => inflow.from === creatorKey)) return "creator-funded";
     if (funders.some((inflow) => creatorFunders.has(inflow.from) && !isPublic(inflow.from))) return "same-funder";
     if (dsu.find(address) === creatorRoot) return "linked";
