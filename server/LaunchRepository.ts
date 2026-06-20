@@ -250,6 +250,10 @@ export class LaunchRepository {
     if (poolType && poolType !== "all") baseFilter.poolType = poolType;
     if (minLiquidityUsd != null) baseFilter.liquidityUsd = { $gte: minLiquidityUsd };
     if (minVolumeUsd != null) baseFilter.volumeUsd = { $gte: minVolumeUsd };
+    // "Real volume" ranks pools by their computed real (external) volume. Pools that haven't
+    // been analyzed yet have no real-volume figure, so exclude them rather than letting their
+    // unanalyzed volume rank as real — also keeps the externalVolumeUsd cursor null-safe.
+    if (sort === "realVolume") baseFilter.externalVolumeUsd = { $ne: null };
     if (search) {
       const pattern = new RegExp(this.escapeRegExp(search), "i");
       baseFilter.$or = [{ pair: pattern }, { creator: pattern }, { poolAddress: pattern }];
