@@ -533,7 +533,7 @@ function App() {
                   <span className="mono">{short(launch.creator)}</span>
                   <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
                   <span className="vol-cell">
-                    <strong>{launch.externalVolumeUsd != null ? formatRealTotal(launch.externalVolumeUsd, launch.volumeUsd, true) : formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
+                    <strong>{launch.intelUpdatedAt != null && launch.externalVolumeUsd != null ? formatRealTotal(launch.externalVolumeUsd, launch.volumeUsd, true) : formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
                     {launch.intelUpdatedAt == null ? (
                       <small className="pending-tag">Not analyzed</small>
                     ) : launch.insiderRatio != null && launch.insiderRatio >= 0.05 ? (

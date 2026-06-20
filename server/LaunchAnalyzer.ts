@@ -118,7 +118,7 @@ export class LaunchAnalyzer {
       const minVolumeUsd = 100;
       return {
         dayVolumeUsd: launches.reduce((sum, launch) => sum + (launch.volumeUsd ?? 0), 0),
-        dayRealVolumeUsd: launches.reduce((sum, launch) => sum + (launch.externalVolumeUsd ?? 0), 0),
+        dayRealVolumeUsd: launches.reduce((sum, launch) => sum + (launch.intelUpdatedAt != null ? launch.externalVolumeUsd ?? 0 : 0), 0),
         dayAnalyzingVolumeUsd: launches.reduce((sum, launch) => sum + (launch.intelUpdatedAt == null ? launch.volumeUsd ?? 0 : 0), 0),
         dayLaunchCount: launches.length,
         dayLaunchCountMinVolume: launches.filter((launch) => (launch.volumeUsd ?? 0) >= minVolumeUsd).length,

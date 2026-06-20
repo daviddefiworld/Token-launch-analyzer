@@ -122,14 +122,16 @@ export class MarketDataService {
     ]);
 
     // Re-derive real/insider from this fresh total and the last-known insider ratio (owned
-    // by the intel loop), so the two stay consistent and real never exceeds total.
-    const ratio = launch.insiderRatio ?? 0;
+    // by the intel loop), so the two stay consistent and real never exceeds total. Until a
+    // pool has actually been analyzed (insiderRatio is null), real/insider are unknown — leave
+    // them null so the volume stays in the "not analyzed" bucket instead of counting as real.
+    const ratio = launch.insiderRatio;
     return {
       poolAddress: launch.poolAddress,
       liquidityUsd,
       volumeUsd,
-      externalVolumeUsd: volumeUsd * (1 - ratio),
-      insiderVolumeUsd: volumeUsd * ratio,
+      externalVolumeUsd: ratio != null ? volumeUsd * (1 - ratio) : null,
+      insiderVolumeUsd: ratio != null ? volumeUsd * ratio : null,
       marketDataUpdatedAt: updatedAt
     };
   }

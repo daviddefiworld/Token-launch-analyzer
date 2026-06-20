@@ -250,10 +250,14 @@ export class LaunchRepository {
     if (poolType && poolType !== "all") baseFilter.poolType = poolType;
     if (minLiquidityUsd != null) baseFilter.liquidityUsd = { $gte: minLiquidityUsd };
     if (minVolumeUsd != null) baseFilter.volumeUsd = { $gte: minVolumeUsd };
-    // "Real volume" ranks pools by their computed real (external) volume. Pools that haven't
-    // been analyzed yet have no real-volume figure, so exclude them rather than letting their
-    // unanalyzed volume rank as real — also keeps the externalVolumeUsd cursor null-safe.
-    if (sort === "realVolume") baseFilter.externalVolumeUsd = { $ne: null };
+    // "Real volume" ranks pools by their computed real (external) volume. Exclude pools that
+    // haven't been analyzed yet (intelUpdatedAt null) — even if a market-data refresh left an
+    // externalVolumeUsd on them, it's the raw total, not a real-volume figure. Requiring
+    // externalVolumeUsd too keeps the descending-externalVolumeUsd cursor null-safe.
+    if (sort === "realVolume") {
+      baseFilter.intelUpdatedAt = { $ne: null };
+      baseFilter.externalVolumeUsd = { $ne: null };
+    }
     if (search) {
       const pattern = new RegExp(this.escapeRegExp(search), "i");
       baseFilter.$or = [{ pair: pattern }, { creator: pattern }, { poolAddress: pattern }];
@@ -372,7 +376,10 @@ export class LaunchRepository {
           _id: null,
           dayLaunchCount: { $sum: 1 },
           dayVolumeUsd: { $sum: { $ifNull: ["$volumeUsd", 0] } },
-          dayRealVolumeUsd: { $sum: { $ifNull: ["$externalVolumeUsd", 0] } },
+          // Real volume only counts pools that have actually been analyzed (intelUpdatedAt set).
+          // A market-data refresh may have left externalVolumeUsd on an unanalyzed pool, so gate
+          // on intelUpdatedAt rather than trusting externalVolumeUsd alone.
+          dayRealVolumeUsd: { $sum: { $cond: [{ $ne: [{ $ifNull: ["$intelUpdatedAt", null] }, null] }, { $ifNull: ["$externalVolumeUsd", 0] }, 0] } },
           // Volume of pools whose attendee intel hasn't run yet (intelUpdatedAt still null),
           // so it can't yet be split into real vs fake.
           dayAnalyzingVolumeUsd: { $sum: { $cond: [{ $eq: [{ $ifNull: ["$intelUpdatedAt", null] }, null] }, { $ifNull: ["$volumeUsd", 0] }, 0] } },
