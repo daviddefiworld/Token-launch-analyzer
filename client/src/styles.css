@@ -195,16 +195,19 @@ a { color: #8effbd; }
    Scoped under .metric-card so these beat the generic `.metric-card span`
    rule (specificity 0,1,1) that otherwise forces display:block, 11px, muted
    gray — which would stack the three values vertically and drop their colors. */
-.metric-card .vol-split { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; font-size: 18px; }
-.metric-card .vol-real, .metric-card .vol-sep, .metric-card .vol-fake { display: inline; font-size: inherit; }
+.metric-card .vol-split { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; font-size: 16px; }
+.metric-card .vol-real, .metric-card .vol-sep, .metric-card .vol-fake, .metric-card .vol-analyzing { display: inline; font-size: inherit; }
 .metric-card .vol-real { color: #8effbd; }
 .metric-card .vol-sep { color: #586273; font-weight: 600; }
 .metric-card .vol-fake { color: #ff8090; }
+.metric-card .vol-analyzing { color: #7fb0e0; }
 
 /* Real-volume column + attendee intelligence */
 .vol-cell { display: flex; flex-direction: column; gap: 2px; }
 .insider-tag { color: #f0b67a; font-size: 9px; font-weight: 800; }
 .insider-tag.high { color: #ff9090; }
+/* "Not analyzed yet" pairs — attendee intel hasn't run, so no real/fake split yet. */
+.pending-tag { color: #7fb0e0; font-size: 9px; font-weight: 800; }
 
 .attendee-panel { margin-top: 14px; }
 .attendee-metrics { margin: 4px 0 12px; }

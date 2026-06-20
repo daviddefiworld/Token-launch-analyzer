@@ -356,10 +356,12 @@ function App() {
   const currentDex = availableDexes.find((item) => item.id === dex);
   const dexLabel = currentDex?.label ?? "DEX";
   const poolTypeOptions = currentDex?.poolTypeOptions ?? [];
-  // 24h volume split: real (external) vs fake (insider/sybil = total − real).
+  // 24h volume split: real (external) / fake (insider/sybil) / analyzing (not yet analyzed,
+  // so its real-vs-fake split is still unknown). fake = total − real − analyzing.
   const dayTotalVol = launchStats?.dayVolumeUsd ?? 0;
   const dayRealVol = launchStats?.dayRealVolumeUsd ?? 0;
-  const dayFakeVol = Math.max(0, dayTotalVol - dayRealVol);
+  const dayAnalyzingVol = launchStats?.dayAnalyzingVolumeUsd ?? 0;
+  const dayFakeVol = Math.max(0, dayTotalVol - dayRealVol - dayAnalyzingVol);
   const dayFakePct = dayTotalVol > 0 ? Math.round((dayFakeVol / dayTotalVol) * 100) : 0;
   return (
     <main className="app-shell">
@@ -470,11 +472,11 @@ function App() {
         <section className="metrics">
           <Metric label="Launches (24h)" value={launchStats?.dayLaunchCount ?? 0} hint="Pools launched today" icon={<RocketIcon />} />
           <Metric
-            label="24h volume (real / fake)"
+            label="24h volume · real/fake/analyzing"
             value={launchStats
-              ? <span className="vol-split"><span className="vol-real">{formatUsdCompact(dayRealVol)}</span><span className="vol-sep">/</span><span className="vol-fake">{formatUsdCompact(dayFakeVol)}</span></span>
+              ? <span className="vol-split"><span className="vol-real">{formatUsdCompact(dayRealVol)}</span><span className="vol-sep">/</span><span className="vol-fake">{formatUsdCompact(dayFakeVol)}</span><span className="vol-sep">/</span><span className="vol-analyzing">{formatUsdCompact(dayAnalyzingVol)}</span></span>
               : "—"}
-            hint={launchStats ? `${dayFakePct}% sybil · ${formatUsdCompact(dayTotalVol)} total` : "External vs insider · ≤ 24h"}
+            hint={launchStats ? `${dayFakePct}% sybil · ${formatUsdCompact(dayAnalyzingVol)} not analyzed` : "External / insider / pending · ≤ 24h"}
             icon={<ChartIcon />}
             danger={dayFakePct >= 50}
           />
@@ -532,9 +534,11 @@ function App() {
                   <span>{formatLaunchUsd(launch.liquidityUsd, launch.marketDataUpdatedAt)}</span>
                   <span className="vol-cell">
                     <strong>{launch.externalVolumeUsd != null ? formatRealTotal(launch.externalVolumeUsd, launch.volumeUsd, true) : formatLaunchUsd(launch.volumeUsd, launch.marketDataUpdatedAt)}</strong>
-                    {launch.insiderRatio != null && launch.insiderRatio >= 0.05 && (
+                    {launch.externalVolumeUsd == null ? (
+                      <small className="pending-tag">Not analyzed</small>
+                    ) : launch.insiderRatio != null && launch.insiderRatio >= 0.05 ? (
                       <small className={`insider-tag ${launch.insiderRatio >= 0.4 ? "high" : ""}`}>{Math.round(launch.insiderRatio * 100)}% insider</small>
-                    )}
+                    ) : null}
                   </span>
                 </button>
               ))}

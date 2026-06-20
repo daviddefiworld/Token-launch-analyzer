@@ -158,7 +158,8 @@ export interface TokenCreation {
 // Headline metrics for the last 24h ("today").
 export interface LaunchStats {
   dayVolumeUsd: number;            // total 24h volume of pools launched in the last 24h
-  dayRealVolumeUsd: number;        // external (real) portion of that volume
+  dayRealVolumeUsd: number;        // external (real) portion of that volume (analyzed pools only)
+  dayAnalyzingVolumeUsd: number;   // volume of pools not analyzed yet (real/fake split still pending)
   dayLaunchCount: number;          // pools launched in the last 24h
   dayLaunchCountMinVolume: number; // ...of those, how many have volume >= minVolumeUsd
   dayActiveCreators: number;       // distinct creator wallets that launched in the last 24h
